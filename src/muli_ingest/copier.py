@@ -42,7 +42,6 @@ class RcloneCopier:
             "0",
             "--disable",
             "Copy",
-            "--local-no-clone",
             "--local-no-preallocate",
             "--log-level",
             "ERROR",
