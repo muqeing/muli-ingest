@@ -1,0 +1,43 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "muli-ingest"
+version = "0.1.0"
+description = "Local-first, verifiable camera media ingest for NAS workflows"
+readme = "README.md"
+license = { file = "LICENSE" }
+authors = [{ name = "Muli Ingest contributors" }]
+keywords = ["camera", "ingest", "media", "nas", "checksum", "dit"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Web Environment",
+  "License :: OSI Approved :: Apache Software License",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Multimedia",
+]
+requires-python = ">=3.12"
+dependencies = ["fastapi>=0.115,<1", "uvicorn>=0.34,<1", "blake3>=1.0,<2", "pydantic>=2.10,<3"]
+
+[project.urls]
+Homepage = "https://github.com/muqeing/muli-ingest"
+Repository = "https://github.com/muqeing/muli-ingest"
+Issues = "https://github.com/muqeing/muli-ingest/issues"
+
+[project.optional-dependencies]
+dev = ["pytest>=8,<10", "httpx>=0.28,<1", "ruff>=0.11,<1", "build>=1,<2", "playwright>=1.51,<2"]
+
+[project.scripts]
+muli-ingest = "muli_ingest.cli:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 110
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/muli_ingest"]

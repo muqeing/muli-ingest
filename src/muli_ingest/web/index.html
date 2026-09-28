@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#111514">
+  <title>木梨 Ingest · 素材接收台</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <section class="access-connection" id="access-connection" aria-labelledby="access-connection-title" aria-busy="true">
+    <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+    <p class="eyebrow">MULI / INGEST</p>
+    <h1 id="access-connection-title">正在连接接收台</h1>
+    <p id="access-connection-message" role="status">正在确认访问状态，请稍候。</p>
+    <button class="button button-secondary" id="access-retry" type="button" hidden>重新连接</button>
+    <noscript><p>请启用浏览器的 JavaScript 后重新打开页面。</p></noscript>
+  </section>
+  <main class="access-screen" id="access-gate" aria-labelledby="access-title" hidden>
+    <div class="access-layout">
+      <section class="access-intro" aria-label="木梨素材接收台">
+        <div class="brand-lockup"><span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span><span><strong>木梨<span class="brand-latin">MULI</span></strong><small>INGEST SYSTEM</small></span></div>
+        <p class="eyebrow"><span class="eyebrow-rule" aria-hidden="true"></span>CONNECTED WORKSPACE</p>
+        <h1 id="access-title">让素材流转，<br>从一次确认开始<span class="title-period">.</span></h1>
+        <p class="access-description">连接工作室的素材接收台，<br>让每一步接收都有据可查。</p>
+        <div class="access-route" aria-hidden="true"><span class="access-route-point">01<small>来源</small></span><i></i><span class="access-route-point is-current">02<small>核验</small></span><i></i><span class="access-route-point">03<small>留存</small></span></div>
+        <span class="access-edition">MATERIAL OPERATIONS / 木梨影像</span>
+      </section>
+      <section class="access-panel" aria-labelledby="access-form-title">
+        <div class="access-panel-top"><span class="access-panel-code">WORKSPACE ACCESS</span><span class="access-network"><i aria-hidden="true"></i>局域网访问</span></div>
+        <div class="access-form-content">
+          <span class="access-symbol" aria-hidden="true">↗</span>
+          <h2 id="access-form-title">访问素材接收台</h2>
+          <p class="access-form-description" id="access-description">请连接同一局域网，并输入你设置的固定登录密码。</p>
+          <form id="access-form" autocomplete="off" aria-describedby="access-description">
+            <label class="field-label" for="access-code">登录密码</label>
+            <input class="field-control access-code" id="access-code" name="access_code" type="password" autocomplete="current-password" autocapitalize="none" spellcheck="false" required aria-describedby="access-message">
+            <p class="access-message" id="access-message" role="status" aria-live="polite" aria-atomic="true">口令仅用于本次访问验证。</p>
+            <button class="button button-primary full-width access-submit" id="access-submit" type="submit">进入接收台 <span aria-hidden="true">→</span></button>
+          </form>
+        </div>
+        <div class="access-transport"><span aria-hidden="true">◇</span><p id="access-transport-note">建议使用 HTTPS 地址访问，让局域网内的连接更安心。</p></div>
+      </section>
+    </div>
+  </main>
+  <a class="skip-link" href="#main-content" hidden>跳至工作区</a>
+  <div class="app-shell" id="app-shell" hidden inert>
+    <aside class="sidebar" aria-label="主导航">
+      <div class="brand-lockup"><span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span><span><strong>木梨<span class="brand-latin">MULI</span></strong><small>INGEST SYSTEM</small></span></div>
+      <div class="rail-label">素材工作流<span>01—05</span></div>
+      <nav class="nav-list">
+        <button class="nav-item is-active" data-page="overview" type="button" aria-current="page"><span class="nav-icon" aria-hidden="true">01</span><span>接收总览</span></button>
+        <button class="nav-item" data-page="sources" type="button"><span class="nav-icon" aria-hidden="true">02</span><span>来源设备</span></button>
+        <button class="nav-item" data-page="batches" type="button"><span class="nav-icon" aria-hidden="true">03</span><span>批次记录</span><span class="nav-count" id="active-count" hidden>0</span></button>
+        <button class="nav-item" data-page="retention" type="button"><span class="nav-icon" aria-hidden="true">04</span><span>留存与回收站</span></button>
+        <button class="nav-item" data-page="settings" type="button"><span class="nav-icon" aria-hidden="true">05</span><span>系统设置</span></button>
+      </nav>
+      <div class="rail-note"><span class="rail-note-line"></span><p>每次接收，<br>都留下完整的依据。</p><small>SCAN / COPY / VERIFY</small></div>
+      <div class="sidebar-foot"><span class="connection-dot" id="connection-dot" aria-hidden="true"></span><div><span id="connection-label">检查本地服务</span><small id="connection-version">等待响应</small></div><span class="local-chip">LOCAL</span></div>
+    </aside>
+
+    <div class="content-shell">
+      <header class="topbar">
+        <button class="mobile-menu" id="mobile-menu" type="button" aria-label="打开导航" aria-controls="mobile-nav" aria-expanded="false"><span aria-hidden="true">☰</span></button>
+        <div class="breadcrumb"><span class="console-code">M / INGEST</span><b aria-hidden="true">/</b><strong id="page-title">接收总览</strong></div>
+        <div class="top-actions"><span class="topbar-label">素材接收工作站</span><span class="status-pill" id="mode-pill"><i aria-hidden="true"></i>连接检查中</span><button class="icon-button" id="refresh-button" type="button" aria-label="刷新数据" title="刷新数据"><span aria-hidden="true">↻</span></button><button class="access-logout" id="access-logout" type="button" hidden>退出访问</button></div>
+      </header>
+      <nav class="mobile-nav" id="mobile-nav" aria-label="移动端导航"><button data-page="overview" type="button" aria-current="page">总览</button><button data-page="sources" type="button">来源</button><button data-page="batches" type="button">批次</button><button data-page="retention" type="button">留存</button><button data-page="settings" type="button">设置</button></nav>
+
+      <main class="main-content" id="main-content" tabindex="-1">
+        <div class="toast-stack" id="toast-stack" aria-live="polite" aria-atomic="true"></div>
+        <section class="page is-visible" id="page-overview" data-page-view="overview" aria-labelledby="overview-title">
+          <div class="page-intro intro-overview"><div><p class="eyebrow"><span class="eyebrow-rule" aria-hidden="true"></span>MEDIA RECEPTION / 01</p><h1 id="overview-title">素材接收台<span class="title-period">.</span></h1><p class="lede">从来源到中转，每一步都有据可查。</p></div><button class="button button-primary button-large" data-go-page="sources" type="button"><span aria-hidden="true">＋</span> 新建素材扫描 <span class="button-arrow" aria-hidden="true">↗</span></button></div>
+          <div class="notice-banner" id="environment-notice"><span class="notice-symbol" aria-hidden="true">!</span><div><strong>正在读取本地环境</strong><p>连接本机回环服务，等待返回运行状态。</p><small class="capability-note" id="capability-note" hidden></small></div><span class="notice-value" id="production-badge">状态未知</span></div>
+
+          <div class="metrics-grid" id="overview-metrics" aria-label="接收数据总览">
+            <article class="metric-card"><div class="metric-top"><span class="metric-label">活动批次</span><span class="metric-code">JOBS</span></div><strong id="metric-active">—</strong><small id="metric-active-note">等待服务响应</small></article>
+            <article class="metric-card"><div class="metric-top"><span class="metric-label">文件核验记录</span><span class="metric-code">VERIFIED</span></div><strong id="metric-volume">—</strong><small id="metric-volume-note">按批次累计</small></article>
+            <article class="metric-card"><div class="metric-top"><span class="metric-label">留存批次</span><span class="metric-code">RETAINED</span></div><strong id="metric-retention">—</strong><small id="metric-retention-note">等待服务响应</small></article>
+            <article class="metric-card metric-card-accent"><div class="metric-top"><span class="metric-label">来源设备</span><span class="metric-code">SOURCES</span></div><strong id="metric-sources">—</strong><small id="metric-sources-note">当前可见来源</small></article>
+          </div>
+
+          <article class="flow-console" aria-labelledby="flow-title">
+            <div class="flow-heading"><div><span class="section-index">A</span><h2 id="flow-title">素材流向</h2><span class="flow-subtitle">INGEST ROUTE</span></div><span class="flow-state" id="flow-state">等待服务数据</span></div>
+            <div class="material-route">
+              <div class="route-node route-source"><div class="route-label"><span>01</span> 来源介质</div><div class="media-device" aria-hidden="true"><span class="device-slot"></span><span class="device-lines"></span><span class="device-led"></span></div><strong id="flow-source-title">读取来源中</strong><p id="flow-source-note">等待设备状态</p></div>
+              <div class="route-link" aria-hidden="true"><span></span><i>→</i></div>
+              <div class="route-node route-process"><div class="route-label"><span>02</span> 复制与核验</div><div class="verification-device" aria-hidden="true"><span class="verify-corner"></span><span class="verify-glyph">✓</span><span class="verify-corner"></span></div><strong id="flow-process-title">先扫描，再手动启动</strong><p id="flow-process-note">来源与目标独立核验</p></div>
+              <div class="route-link" aria-hidden="true"><span></span><i>→</i></div>
+              <div class="route-node route-target"><div class="route-label"><span>03</span> 中转存储</div><div class="storage-device" aria-hidden="true"><i></i><i></i><i></i></div><strong>本地中转目录</strong><p id="flow-target-note">正在读取路径</p><button class="text-button route-settings-link" data-go-page="settings" type="button">查看保存位置 <span aria-hidden="true">↗</span></button></div>
+            </div>
+            <div class="flow-foot"><span><i aria-hidden="true"></i>手动确认范围后启动</span><span>批次完成 ≠ 全盘可格式化</span><button class="text-button" data-go-page="batches" type="button">查看核验记录 <span aria-hidden="true">↗</span></button></div>
+          </article>
+
+          <div class="overview-grid">
+            <article class="panel panel-wide"><div class="panel-heading"><div class="section-title"><span class="section-index">B</span><div><p class="eyebrow">ACTIVE QUEUE</p><h2>进行中的批次</h2></div></div><button class="text-button" data-go-page="batches" type="button">全部批次 <span aria-hidden="true">↗</span></button></div><div id="overview-active" class="panel-content"><div class="loading-state" role="status"><span></span><span></span><p>正在读取批次队列</p></div></div></article>
+            <article class="panel source-overview-panel"><div class="panel-heading"><div class="section-title"><span class="section-index">C</span><div><p class="eyebrow">CONNECTED MEDIA</p><h2>来源设备</h2></div></div><button class="text-button" data-go-page="sources" type="button">管理 <span aria-hidden="true">↗</span></button></div><div id="overview-sources" class="panel-content"><div class="loading-state" role="status"><span></span><span></span><p>正在读取来源设备</p></div></div></article>
+          </div>
+          <div class="recent-strip"><div class="recent-heading"><p class="eyebrow">RECEIPT LOG</p><h2>最近完成</h2></div><div id="overview-recent" class="recent-list"><span class="muted">正在读取批次记录。</span></div></div>
+          <footer class="workspace-footer"><span>MULI / MATERIAL OPERATIONS</span><span>扫描清单 · 文件核验 · 批次回执</span></footer>
+        </section>
+
+        <section class="page" id="page-sources" data-page-view="sources" aria-labelledby="sources-title" hidden>
+          <div class="page-intro"><div><p class="eyebrow">SOURCE MEDIA / 02</p><h1 id="sources-title">来源设备<span class="title-period">.</span></h1><p class="lede">确认介质身份与扫描范围，再开始接收。</p></div><button class="button button-quiet" id="sources-refresh" type="button">↻ 刷新来源</button></div>
+          <div class="workflow-steps" aria-label="接收步骤"><span><b>01</b>选择来源</span><i aria-hidden="true">→</i><span><b>02</b>扫描并确认范围</span><i aria-hidden="true">→</i><span><b>03</b>手动开始复制</span></div>
+          <div class="source-layout"><div><div class="list-heading"><span>已配置的来源</span><small>READ ONLY SOURCE</small></div><div class="source-list" id="source-list"><div class="loading-state" role="status"><span></span><span></span><p>正在读取来源</p></div></div><p class="source-context">连接状态来自本机服务。来源路径与身份由系统配置，扫描不会移动或删除原始文件。</p></div><aside class="scan-panel panel" id="scan-panel"><div class="panel-heading"><div><p class="eyebrow">SCOPE SELECTOR</p><h2>扫描范围</h2></div><span class="step-badge">MANUAL</span></div><p class="panel-help">先全卷扫描，再按文件夹收窄范围。扫描本身不会开始复制。</p><label class="field-label" for="scan-source">来源设备</label><select class="field-control" id="scan-source"><option value="">请先选择来源</option></select><div id="scan-source-identity" class="scan-source-identity" aria-live="polite" aria-atomic="true" hidden></div><button class="button button-secondary full-width" id="scan-button" type="button">开始扫描</button><div id="scan-summary" class="scan-summary" role="status" hidden></div><div id="directory-picker" class="directory-picker" hidden><div class="picker-heading"><strong>选择要转运的文件夹</strong><span id="directory-count">0 项</span></div><div id="directory-tree" class="directory-tree"></div><p class="field-hint">变更范围后，请点击上方扫描按钮重新扫描，再开始复制。</p><button class="button button-primary full-width" id="start-batch-button" type="button" disabled>确认范围并开始</button></div></aside></div>
+        </section>
+
+        <section class="page" id="page-batches" data-page-view="batches" aria-labelledby="batches-title" hidden><div class="page-intro"><div><p class="eyebrow">BATCH REGISTER / 03</p><h1 id="batches-title">批次记录<span class="title-period">.</span></h1><p class="lede">追踪复制、核验与当前留存状态。每个结果都对应一份批次回执。</p></div><button class="button button-quiet" id="batches-refresh" type="button">↻ 刷新批次</button></div><div class="batch-layout"><div class="batch-register"><div class="list-heading"><span>接收记录</span><small>SELECT A BATCH</small></div><div class="batch-list panel" id="batch-list"><div class="loading-state" role="status"><span></span><span></span><p>正在读取批次记录</p></div></div></div><article class="batch-detail panel" id="batch-detail"><div class="detail-placeholder empty-state"><span class="empty-icon" aria-hidden="true">↗</span><strong>选择一个批次</strong><p>查看进度、文件结果和留存操作。</p></div></article></div></section>
+
+        <section class="page" id="page-retention" data-page-view="retention" aria-labelledby="retention-title" hidden><div class="page-intro"><div><p class="eyebrow">RETENTION &amp; RECOVERY / 04</p><h1 id="retention-title">留存与回收站<span class="title-period">.</span></h1><p class="lede">先查看到期计划，再核对精确批次。保护条件始终优先。</p></div><button class="button button-quiet" id="retention-refresh" type="button">↻ 刷新状态</button></div><div class="safety-line"><span class="notice-symbol" aria-hidden="true">!</span><p>当前开发版未启用自动清理与永久删除。预览不会改变素材。</p></div><div class="retention-cards" id="retention-metrics"><article class="metric-card"><span class="metric-label">仍在留存</span><strong>—</strong><small>等待服务响应</small></article><article class="metric-card"><span class="metric-label">可回收空间</span><strong>—</strong><small>等待服务响应</small></article><article class="metric-card"><span class="metric-label">回收站占用</span><strong>—</strong><small>等待服务响应</small></article></div><div class="retention-grid"><article class="panel"><div class="panel-heading"><div><p class="eyebrow">CLEANUP PLAN</p><h2>到期清理</h2></div><span class="policy-chip" id="cleanup-state">未读取</span></div><p class="panel-help">失败、保护锁、依赖或未确认转存的批次，会在预览中列出阻塞原因。</p><div id="cleanup-plan" class="cleanup-plan"><div class="empty-state compact"><span class="empty-icon" aria-hidden="true">—</span><strong>尚未生成清理预览</strong><p>查看候选范围、预计空间与阻塞原因。</p></div></div><div class="panel-actions"><button class="button button-secondary" id="cleanup-preview-button" type="button">生成清理预览</button><button class="button button-danger" id="cleanup-execute-button" type="button" disabled>确认并移入回收站</button></div></article><article class="panel"><div class="panel-heading"><div><p class="eyebrow">RECOVERY AREA</p><h2>回收站中的批次</h2></div></div><div id="trash-list" class="trash-list"><div class="empty-state compact"><span class="empty-icon" aria-hidden="true">—</span><strong>回收站为空</strong><p>已移入回收站的批次会在这里显示。</p></div></div></article></div></section>
+
+        <section class="page" id="page-settings" data-page-view="settings" aria-labelledby="settings-title" hidden>
+          <div class="page-intro"><div><p class="eyebrow">SYSTEM PARAMETERS / 05</p><h1 id="settings-title">系统设置<span class="title-period">.</span></h1><p class="lede">查看素材保存位置，配置接收、核验与留存策略。</p></div><div class="settings-actions"><span class="version-chip" id="settings-version">版本 —</span><button class="button button-quiet" id="settings-refresh" type="button">↻ 重新读取</button></div></div>
+          <article class="storage-location panel" aria-labelledby="storage-location-title">
+            <div class="storage-location-heading"><div><p class="eyebrow">STORAGE DESTINATION</p><h2 id="storage-location-title">中转素材保存位置</h2></div><span class="storage-lock">启动配置 · 只读</span></div>
+            <div class="storage-path-box">
+              <div class="storage-path-content" aria-live="polite" aria-atomic="true"><span class="storage-path-label" id="storage-path-state">正在读取路径</span><code class="storage-path" id="storage-root-path" aria-label="中转素材保存位置完整路径">等待本地服务返回保存位置。</code></div>
+              <button class="button button-secondary storage-copy" id="copy-staging-path" type="button" aria-describedby="storage-path-state" disabled>复制完整路径</button>
+            </div>
+            <div class="storage-layout"><div class="storage-layout-title"><span class="section-index" aria-hidden="true">↳</span><strong>每批素材独立保存</strong></div><div class="storage-tree"><div class="storage-tree-row"><code>BATCH_xxx/</code><span>批次根目录 · 保留报告与回执</span></div><div class="storage-tree-row storage-tree-child"><code>SOURCE_DATA/</code><span>实际素材 · 位于对应批次目录内</span></div></div></div>
+            <div class="storage-config-note"><p>当前开发版由服务启动配置锁定；更换位置需停止服务并以新的 <code>--staging</code> 路径启动。</p><small>NAS / Docker 版计划在安装时选择保存目录。</small></div>
+          </article>
+          <div class="safety-line"><span class="notice-symbol" aria-hidden="true">i</span><p>设置来自服务端声明。当前开发版的自动清理与永久删除能力尚未启用。</p></div><div class="settings-notice" id="settings-notice" role="alert" hidden></div><form id="settings-form" class="settings-form"><div class="loading-state" role="status"><span></span><span></span><p>正在读取设置结构</p></div></form>
+        </section>
+      </main>
+    </div>
+  </div>
+
+  <dialog class="modal" id="action-modal" aria-labelledby="modal-title" aria-describedby="modal-body"><div class="modal-inner"><div class="modal-heading"><div><p class="eyebrow" id="modal-eyebrow">需要确认</p><h2 id="modal-title">确认操作</h2></div><button class="icon-button modal-close" id="modal-close" type="button" aria-label="关闭对话框">×</button></div><div class="modal-body" id="modal-body"></div><div class="modal-actions" id="modal-actions"><button class="button button-quiet" id="modal-cancel" type="button">取消</button><button class="button button-primary" id="modal-confirm" type="button">确认</button></div></div></dialog>
+  <script src="/static/app.js" defer></script>
+</body>
+</html>

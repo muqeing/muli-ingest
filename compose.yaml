@@ -1,0 +1,65 @@
+services:
+  muli-ingest:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: muli-ingest:local
+    user: "${PUID:-1000}:${PGID:-1000}"
+    command:
+      - --container-loopback
+      - --host
+      - 0.0.0.0
+      - --state
+      - /state
+      - --staging
+      - /staging
+      - --source
+      - /sources/source-01
+      - --rclone
+      - /usr/local/bin/rclone
+      - --port
+      - "8765"
+    environment:
+      MULI_INGEST_CONTAINER_LOOPBACK: "1"
+      PYTHONUNBUFFERED: "1"
+      TZ: Asia/Shanghai
+    ports:
+      - "127.0.0.1:${MULI_INGEST_PORT:-8765}:8765"
+    volumes:
+      - type: bind
+        source: ${MULI_INGEST_STATE:?MULI_INGEST_STATE_required}
+        target: /state
+      - type: bind
+        source: ${MULI_INGEST_STAGING:?MULI_INGEST_STAGING_required}
+        target: /staging
+      - type: bind
+        source: ${MULI_INGEST_SOURCE:?MULI_INGEST_SOURCE_required}
+        target: /sources/source-01
+        read_only: true
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+    stop_grace_period: 45s
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import urllib.request;
+          urllib.request.urlopen('http://127.0.0.1:8765/api/v1/health', timeout=2).read()
+      interval: 15s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    networks:
+      - muli-ingest-private
+
+networks:
+  muli-ingest-private:
+    driver: bridge

@@ -1,0 +1,96 @@
+services:
+  muli-ingest:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: muli-ingest:local
+    user: "${PUID:-1000}:${PGID:-1000}"
+    command:
+      - --lan-access
+      - --access-token-file
+      - /run/secrets/muli_ingest_access_code
+      - --allowed-host
+      - ${MULI_INGEST_ALLOWED_HOST:-muli-ingest.local}
+      - --host
+      - 0.0.0.0
+      - --state
+      - /state
+      - --staging
+      - /staging
+      - --source
+      - /sources/source-01
+      - --source-label
+      - ${MULI_INGEST_SOURCE_01_LABEL:-来源 01}
+      - --source-uuid
+      - ${MULI_INGEST_SOURCE_01_UUID:?MULI_INGEST_SOURCE_01_UUID_required}
+      - --source
+      - /sources/source-02
+      - --source-label
+      - ${MULI_INGEST_SOURCE_02_LABEL:-来源 02}
+      - --source-uuid
+      - ${MULI_INGEST_SOURCE_02_UUID:?MULI_INGEST_SOURCE_02_UUID_required}
+      - --rclone
+      - /usr/local/bin/rclone
+      - --port
+      - "8765"
+    environment:
+      PYTHONUNBUFFERED: "1"
+      TZ: Asia/Shanghai
+    ports:
+      - "${MULI_INGEST_BIND_ADDRESS:-0.0.0.0}:${MULI_INGEST_PORT:-18765}:8765"
+    volumes:
+      - type: bind
+        source: ${MULI_INGEST_STATE:?MULI_INGEST_STATE_required}
+        target: /state
+      - type: bind
+        source: ${MULI_INGEST_STAGING:?MULI_INGEST_STAGING_required}
+        target: /staging
+      - type: bind
+        source: ${MULI_INGEST_SOURCE:?MULI_INGEST_SOURCE_required}
+        target: /sources/source-01
+        read_only: true
+      - type: bind
+        source: ${MULI_INGEST_SOURCE_02:?MULI_INGEST_SOURCE_02_required}
+        target: /sources/source-02
+        read_only: true
+      - type: bind
+        source: ${MULI_INGEST_EXTERNAL_ROOT:-/vol00}
+        target: /external
+        read_only: true
+        bind:
+          propagation: rslave
+      - type: bind
+        source: /run/udev/data
+        target: /run/udev/data
+        read_only: true
+      - type: bind
+        source: ${MULI_INGEST_ACCESS_CODE_FILE:?MULI_INGEST_ACCESS_CODE_FILE_required}
+        target: /run/secrets/muli_ingest_access_code
+        read_only: true
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+    stop_grace_period: 45s
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import urllib.request;
+          urllib.request.urlopen('http://127.0.0.1:8765/api/v1/health', timeout=2).read()
+      interval: 15s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    networks:
+      - muli-ingest-private
+
+networks:
+  muli-ingest-private:
+    driver: bridge
