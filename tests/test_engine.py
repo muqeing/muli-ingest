@@ -1,4 +1,5 @@
 import os
+import shutil
 import threading
 import time
 from pathlib import Path
@@ -9,7 +10,8 @@ from muli_ingest.engine import Engine
 from muli_ingest.safeio import SafetyError
 from muli_ingest.sources import source_record
 
-RCLONE = Path(__file__).resolve().parents[3] / "work/tools/rclone"
+LOCAL_RCLONE = Path(__file__).resolve().parents[3] / "work/tools/rclone"
+RCLONE = LOCAL_RCLONE if LOCAL_RCLONE.is_file() else Path(shutil.which("rclone") or "")
 
 
 @pytest.fixture

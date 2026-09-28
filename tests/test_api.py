@@ -1,3 +1,4 @@
+import shutil
 from pathlib import Path
 
 import pytest
@@ -7,7 +8,8 @@ from muli_ingest.access import LanAccess
 from muli_ingest.api import create_app
 from muli_ingest.engine import Engine
 
-RCLONE = Path(__file__).resolve().parents[3] / "work" / "tools" / "rclone"
+LOCAL_RCLONE = Path(__file__).resolve().parents[3] / "work" / "tools" / "rclone"
+RCLONE = LOCAL_RCLONE if LOCAL_RCLONE.is_file() else Path(shutil.which("rclone") or "")
 
 
 @pytest.fixture

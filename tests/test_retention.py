@@ -1,3 +1,4 @@
+import shutil
 from datetime import timedelta
 from pathlib import Path
 
@@ -7,7 +8,8 @@ from muli_ingest.engine import Engine
 from muli_ingest.retention import Retention, now
 from muli_ingest.safeio import SafetyError
 
-RCLONE = Path(__file__).resolve().parents[3] / "work/tools/rclone"
+LOCAL_RCLONE = Path(__file__).resolve().parents[3] / "work/tools/rclone"
+RCLONE = LOCAL_RCLONE if LOCAL_RCLONE.is_file() else Path(shutil.which("rclone") or "")
 
 
 @pytest.fixture
