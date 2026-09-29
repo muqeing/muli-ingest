@@ -19,7 +19,13 @@ from .metadata import extract_metadata
 from .reports import retention_snapshot, write_report
 from .safeio import Root, SafetyError, atomic_json, digest_fd, digest_file, signature, sync_dir
 from .settings import UNSUPPORTED_SETTINGS, Settings, settings_schema
-from .sources import check_source, linux_external_mounts, scan_source, source_record
+from .sources import (
+    check_source,
+    disconnected_source_record,
+    linux_external_mounts,
+    scan_source,
+    source_record,
+)
 from .store import Store
 
 
@@ -109,10 +115,17 @@ class Engine:
                 if self.mode != "demo" and not self._explicit_uuids[str(path)]:
                     record["identity_confidence"] = "low"
                 found.append(record)
-            except (OSError, ValueError):
-                pass
+            except (OSError, ValueError, SafetyError) as exc:
+                found.append(
+                    disconnected_source_record(
+                        path,
+                        label=self._explicit_labels[str(path)],
+                        volume_uuid=self._explicit_uuids[str(path)],
+                        reason=exc.code if isinstance(exc, SafetyError) else "source_unavailable",
+                    )
+                )
         if self.mode != "demo":
-            explicit_identities = {tuple(item["identity"]) for item in found}
+            explicit_identities = {tuple(item["identity"]) for item in found if item["connected"]}
             for item in linux_external_mounts([self.state, self.staging]):
                 if tuple(item["identity"]) in explicit_identities:
                     continue

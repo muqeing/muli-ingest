@@ -29,6 +29,63 @@ VIDEOS = {".mp4", ".mov", ".mxf", ".avi", ".mts", ".m2ts", ".braw", ".r3d", ".lr
 JUNK_DIRS = {".Trashes", ".Spotlight-V100", ".fseventsd"}
 
 
+def _mount_path(value):
+    for escaped, char in [("\\040", " "), ("\\011", "\t"), ("\\012", "\n"), ("\\134", "\\")]:
+        value = value.replace(escaped, char)
+    return value
+
+
+def _udev_properties(major_minor):
+    properties = {}
+    try:
+        rows = (Path("/run/udev/data") / f"b{major_minor}").read_text(errors="replace").splitlines()
+    except OSError:
+        return properties
+    for row in rows:
+        if row.startswith("E:") and "=" in row:
+            key, value = row[2:].split("=", 1)
+            properties[key] = value
+    return properties
+
+
+def mounted_volume_identity(path):
+    """Return whether path is an exact mount and its currently observed volume UUID.
+
+    Docker bind mounts configured camera paths as exact mount targets. An unplugged
+    camera can leave the host directory behind, so path existence alone is not a
+    connection signal.
+    """
+    mountinfo = Path("/proc/self/mountinfo")
+    if not mountinfo.exists():
+        return False, None
+    expected_path = str(Path(path).absolute())
+    try:
+        lines = mountinfo.read_text().splitlines()
+    except OSError:
+        return False, None
+    for line in lines:
+        fields = line.split()
+        if len(fields) < 10 or _mount_path(fields[4]) != expected_path:
+            continue
+        major_minor = fields[2]
+        properties = _udev_properties(major_minor)
+        volume_uuid = properties.get("ID_FS_UUID")
+        if not volume_uuid:
+            sep = fields.index("-")
+            device = Path(fields[sep + 2])
+            by_uuid = Path("/dev/disk/by-uuid")
+            if by_uuid.exists():
+                for link in by_uuid.iterdir():
+                    try:
+                        if link.resolve() == device.resolve():
+                            volume_uuid = link.name
+                            break
+                    except OSError:
+                        continue
+        return True, volume_uuid
+    return False, None
+
+
 def media_type(name):
     ext = Path(name).suffix.lower()
     return "photo" if ext in PHOTOS else "video" if ext in VIDEOS else "other"
@@ -36,6 +93,9 @@ def media_type(name):
 
 def source_record(path, label=None, volume_uuid=None):
     path = Path(path).absolute()
+    exact_mount, observed_uuid = mounted_volume_identity(path)
+    if volume_uuid and exact_mount and observed_uuid != volume_uuid:
+        raise SafetyError("source_identity_mismatch", "当前挂载卷与配置的设备身份不一致")
     with Root(path) as root:
         identity = list(root.identity)
         names = set(os.listdir(root.fd))
@@ -50,6 +110,23 @@ def source_record(path, label=None, volume_uuid=None):
         "identity": identity,
         "identity_confidence": "high" if volume_uuid else "local_path",
         "volume_uuid": volume_uuid,
+    }
+
+
+def disconnected_source_record(path, label=None, volume_uuid=None, reason="source_unavailable"):
+    path = Path(path).absolute()
+    identity_key = "uuid:" + volume_uuid if volume_uuid else "path:" + str(path)
+    return {
+        "source_id": blake3(identity_key.encode()).hexdigest()[:24],
+        "session_id": uuid.uuid4().hex,
+        "label": label or path.name,
+        "path": str(path),
+        "classification": "capture_media",
+        "connected": False,
+        "identity": [],
+        "identity_confidence": "high" if volume_uuid else "low",
+        "volume_uuid": volume_uuid,
+        "unavailable_reason": reason,
     }
 
 
@@ -161,22 +238,12 @@ def linux_external_mounts(protected=()):
         topology = str(sysdev.resolve())
         if "/usb" not in topology and "/mmc" not in topology:
             continue
-        path = fields[4]
-        for esc, char in [("\\040", " "), ("\\011", "\t"), ("\\012", "\n"), ("\\134", "\\")]:
-            path = path.replace(esc, char)
+        path = _mount_path(fields[4])
         p = Path(path)
         if any(p == Path(x) or p in Path(x).parents or Path(x) in p.parents for x in protected):
             continue
         volume_uuid = None
-        properties = {}
-        udev = Path("/run/udev/data") / f"b{major_minor}"
-        try:
-            for row in udev.read_text(errors="replace").splitlines():
-                if row.startswith("E:") and "=" in row:
-                    key, value = row[2:].split("=", 1)
-                    properties[key] = value
-        except OSError:
-            pass
+        properties = _udev_properties(major_minor)
         volume_uuid = properties.get("ID_FS_UUID")
         dev = Path(fields[sep + 2])
         by_uuid = Path("/dev/disk/by-uuid")

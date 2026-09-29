@@ -1,3 +1,6 @@
+import pytest
+
+from muli_ingest.safeio import SafetyError
 from muli_ingest.sources import scan_source, source_record
 
 
@@ -40,3 +43,12 @@ def test_link_inside_scope_fails_scan(tmp_path):
     scan = scan_source(source_record(tmp_path), ["."], True)
     assert not scan["complete"]
     assert scan["errors"][0]["type"] == "unsupported_entry"
+
+
+def test_configured_uuid_rejects_stale_exact_mount_directory(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "muli_ingest.sources.mounted_volume_identity", lambda _path: (True, "SYSTEM-DISK")
+    )
+    with pytest.raises(SafetyError, match="设备身份不一致") as error:
+        source_record(tmp_path, label="Action", volume_uuid="ACTION-CARD")
+    assert error.value.code == "source_identity_mismatch"

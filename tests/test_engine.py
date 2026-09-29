@@ -302,6 +302,41 @@ def test_configured_local_source_can_share_target_filesystem(tmp_path):
         engine.close()
 
 
+def test_configured_camera_is_disconnected_until_expected_uuid_is_mounted(tmp_path, monkeypatch):
+    source = tmp_path / "configured-action"
+    source.mkdir()
+    (source / "DCIM").mkdir()
+    observed_uuid = "SYSTEM-DISK"
+    monkeypatch.setattr(
+        "muli_ingest.sources.mounted_volume_identity", lambda _path: (True, observed_uuid)
+    )
+    engine = Engine(
+        tmp_path / "state",
+        tmp_path / "stage",
+        [source],
+        rclone=str(RCLONE),
+        mode="local",
+        source_labels=["DJI Action"],
+        source_uuids=["ACTION-CARD"],
+    )
+    try:
+        disconnected = engine.sources()
+        assert len(disconnected) == 1
+        assert disconnected[0]["label"] == "DJI Action"
+        assert disconnected[0]["connected"] is False
+        assert disconnected[0]["unavailable_reason"] == "source_identity_mismatch"
+        with pytest.raises(SafetyError, match="source_unavailable"):
+            engine.scan(disconnected[0]["source_id"], ["."])
+
+        observed_uuid = "ACTION-CARD"
+        connected = engine.sources()
+        assert len(connected) == 1
+        assert connected[0]["connected"] is True
+        assert connected[0]["volume_uuid"] == "ACTION-CARD"
+    finally:
+        engine.close()
+
+
 def test_dynamic_discovery_keeps_camera_media_and_deduplicates_explicit_source(
     tmp_path, monkeypatch
 ):
