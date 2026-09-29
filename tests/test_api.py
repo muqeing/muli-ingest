@@ -49,6 +49,41 @@ def test_source_identity_fields_are_explicit(client):
     assert source["mount_id"] is None
 
 
+def test_sources_keep_collapsed_history_fields_after_disconnect(tmp_path, monkeypatch):
+    source = tmp_path / "camera"
+    source.mkdir()
+    (source / "DCIM").mkdir()
+    observed = "CARD-UUID"
+    monkeypatch.setattr(
+        "muli_ingest.sources.mounted_volume_identity", lambda _path: (True, observed)
+    )
+    engine = Engine(
+        tmp_path / "state",
+        tmp_path / "staging",
+        [source],
+        rclone=str(RCLONE),
+        mode="local",
+        source_labels=["Camera"],
+        source_uuids=["CARD-UUID"],
+    )
+    app = create_app(engine)
+    try:
+        with TestClient(app, base_url="http://127.0.0.1") as history_client:
+            connected = history_client.get("/api/v1/sources").json()["sources"]
+            assert len(connected) == 1
+            assert connected[0]["connected"] is True
+            assert connected[0]["ever_connected"] is True
+            assert connected[0]["connected_at"]
+            observed = "SYSTEM-DISK"
+            previous = history_client.get("/api/v1/sources").json()["sources"]
+            assert len(previous) == 1
+            assert previous[0]["connected"] is False
+            assert previous[0]["ever_connected"] is True
+            assert previous[0]["last_seen_at"] == connected[0]["last_seen_at"]
+    finally:
+        engine.close()
+
+
 def test_loopback_and_write_request_guards(client):
     assert client.get("/api/v1/status", headers={"host": "example.com"}).status_code == 403
     source = client.get("/api/v1/sources").json()["sources"][0]

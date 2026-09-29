@@ -23,6 +23,7 @@ from .sources import (
     check_source,
     disconnected_source_record,
     linux_external_mounts,
+    mounted_volume_identity,
     scan_source,
     source_record,
 )
@@ -103,6 +104,7 @@ class Engine:
         self.closed = False
 
     def refresh_sources(self):
+        now = utcnow()
         found = []
         configured_paths = {str(path) for path in self._explicit_paths}
         for path in self._explicit_paths:
@@ -132,7 +134,31 @@ class Engine:
                 if item["classification"] != "capture_media":
                     continue
                 found.append(item)
-        previous = self._sources
+        previous = {
+            item["source_id"]: item
+            for item in self.store.all("source")
+            if item.get("source_id")
+        }
+        # Upgrade existing installations without losing the sources frozen in
+        # older batch receipts.
+        for batch in self.store.all("batch"):
+            frozen = batch.get("source") or {}
+            sid = frozen.get("source_id") or batch.get("source_id")
+            if not sid or sid in previous:
+                continue
+            seen_at = batch.get("completed_at") or batch.get("created_at") or now
+            previous[sid] = {
+                **frozen,
+                "source_id": sid,
+                "label": frozen.get("label") or batch.get("source_label") or sid,
+                "connected": False,
+                "ever_connected": True,
+                "first_seen_at": seen_at,
+                "connected_at": seen_at,
+                "last_seen_at": seen_at,
+                "disconnected_at": seen_at,
+            }
+        previous.update(self._sources)
         new = {}
         for s in found:
             p = Path(s["path"])
@@ -152,10 +178,45 @@ class Engine:
                 and old["connected"]
             ):
                 s["session_id"] = old["session_id"]
+            if s["connected"]:
+                s.update(
+                    ever_connected=True,
+                    first_seen_at=(old or {}).get("first_seen_at") or now,
+                    connected_at=(old or {}).get("connected_at")
+                    if old and old.get("connected")
+                    else now,
+                    last_seen_at=now,
+                    disconnected_at=None,
+                )
+            elif old and old.get("ever_connected"):
+                s = {
+                    **old,
+                    **s,
+                    "connected": False,
+                    "ever_connected": True,
+                    "first_seen_at": old.get("first_seen_at"),
+                    "connected_at": old.get("connected_at"),
+                    "last_seen_at": old.get("last_seen_at"),
+                    "disconnected_at": old.get("disconnected_at") or now,
+                }
+            else:
+                s.update(
+                    ever_connected=False,
+                    first_seen_at=None,
+                    connected_at=None,
+                    last_seen_at=None,
+                    disconnected_at=None,
+                )
             new[s["source_id"]] = s
         for key, old in previous.items():
             if key not in new:
-                new[key] = {**old, "connected": False}
+                new[key] = {
+                    **old,
+                    "connected": False,
+                    "disconnected_at": now if old.get("connected") else old.get("disconnected_at"),
+                }
+        for key, source in new.items():
+            self.store.put("source", key, source)
         self._sources = new
 
     def sources(self):
@@ -377,12 +438,34 @@ class Engine:
         if self.cancels[b["batch_uid"]].is_set():
             raise SafetyError("operator_stop")
         try:
+            expected_uuid = b["source"].get("volume_uuid")
+            exact_mount, observed_uuid = mounted_volume_identity(b["source"]["path"])
+            if expected_uuid and exact_mount and observed_uuid != expected_uuid:
+                raise SafetyError("source_unavailable", "来源设备已断开或被其他卷替换")
             check_source(b["source"])
             with Root(self.staging) as r:
                 if r.identity != self.target_identity:
                     raise SafetyError("target_unavailable")
         except OSError as exc:
             raise SafetyError("source_or_target_unavailable", str(exc)) from exc
+
+    @staticmethod
+    def _same_volume(first, second):
+        first_uuid = first.get("volume_uuid")
+        return bool(
+            first_uuid
+            and first.get("identity_confidence") == "high"
+            and second.get("identity_confidence") == "high"
+            and first_uuid == second.get("volume_uuid")
+        )
+
+    @staticmethod
+    def _source_signature_matches(source, expected, observed):
+        if expected == observed:
+            return True
+        # st_dev may change when the same UUID-backed card is mounted again.
+        # The volume UUID plus inode, size and timestamps remain frozen.
+        return bool(source.get("volume_uuid") and expected[1:] == observed[1:])
 
     def _progress(self, uid, stage, path=None, size=0, file_total=0):
         with self.lock:
@@ -481,11 +564,17 @@ class Engine:
             self._check(b)
 
         with root.file(path) as fd:
-            if signature(os.fstat(fd)) != f["signature"]:
+            if not self._source_signature_matches(
+                b["source"], f["signature"], signature(os.fstat(fd))
+            ):
                 raise SafetyError("source_changed", path)
             destination = self.staging / b["batch_id"] / "SOURCE_DATA" / path
             h = f.get("source_hash")
             staged_name = f.get("staged_temp")
+            if f.get("copy_status") == "copying" and staged_name:
+                interrupted = self.staging / b["batch_id"] / ".ingest/partials" / staged_name
+                interrupted.unlink(missing_ok=True)
+                f.update(copy_status="pending", staged_temp=None, error=None, resumed=True)
             if f.get("copy_status") == "copied_unverified" and h and staged_name:
                 staged = self.staging / b["batch_id"] / ".ingest/partials" / staged_name
                 if staged.is_file() and staged.stat().st_size == f["size_bytes"]:
@@ -547,6 +636,7 @@ class Engine:
             temp = self.staging / b["batch_id"] / ".ingest/partials" / uuid.uuid4().hex
             f["attempt_count"] += 1
             f["copy_status"] = "copying"
+            f["staged_temp"] = temp.name
             self.store.put_file(uid, b["source_id"], f)
             self._event(
                 b,
@@ -568,7 +658,9 @@ class Engine:
             else:
                 os.lseek(fd, 0, os.SEEK_SET)
                 self.copier.copy(fd, temp, cfg, check, report)
-            if signature(os.fstat(fd)) != f["signature"]:
+            if not self._source_signature_matches(
+                b["source"], f["signature"], signature(os.fstat(fd))
+            ):
                 raise SafetyError("source_changed", path)
             with open(temp, "rb") as destfd:
                 os.fsync(destfd.fileno())
@@ -754,6 +846,7 @@ class Engine:
                         except SafetyError as exc:
                             if exc.code in {
                                 "operator_stop",
+                                "source_unavailable",
                                 "source_or_target_unavailable",
                                 "target_unavailable",
                             }:
@@ -764,6 +857,8 @@ class Engine:
                         except OSError as exc:
                             if exc.errno in {28, 30, 122}:
                                 raise SafetyError("target_unavailable", str(exc)) from exc
+                            if exc.errno in {5, 6, 19, 116}:
+                                raise SafetyError("source_unavailable", str(exc)) from exc
                             f["error"] = {"type": "file_io_error", "message": str(exc)}
                         if attempt < cfg.max_retries and self.cancels[uid].wait(
                             cfg.retry_delay_seconds
@@ -804,7 +899,10 @@ class Engine:
                 originals = {f["relative_path"]: f for f in scan["files"]}
                 observed = {f["relative_path"]: f for f in current_scan["files"]}
                 if any(
-                    path not in observed or observed[path]["signature"] != f["signature"]
+                    path not in observed
+                    or not self._source_signature_matches(
+                        b["source"], f["signature"], observed[path]["signature"]
+                    )
                     for path, f in originals.items()
                 ):
                     raise SafetyError("source_changed", "冻结范围发生变化")
@@ -815,7 +913,10 @@ class Engine:
                 latest = scan_source(b["source"], scan["selected_roots"], cfg.exclude_os_junk)
                 final_observed = {f["relative_path"]: f for f in latest["files"]}
                 if not latest["complete"] or any(
-                    path not in final_observed or final_observed[path]["signature"] != f["signature"]
+                    path not in final_observed
+                    or not self._source_signature_matches(
+                        b["source"], f["signature"], final_observed[path]["signature"]
+                    )
                     for path, f in originals.items()
                 ):
                     raise SafetyError("source_changed")
@@ -865,7 +966,13 @@ class Engine:
             code = exc.code if isinstance(exc, SafetyError) else "internal_error"
             b["state"] = (
                 "INTERRUPTED"
-                if code in {"operator_stop", "source_or_target_unavailable", "target_unavailable"}
+                if code
+                in {
+                    "operator_stop",
+                    "source_unavailable",
+                    "source_or_target_unavailable",
+                    "target_unavailable",
+                }
                 else "FAILED"
             )
             b["error"] = f"{code}: {exc}"
@@ -931,7 +1038,9 @@ class Engine:
                 raise SafetyError("source_busy")
             self.refresh_sources()
             source = self.source(b["source_id"])
-            if source["identity"] != b["source"]["identity"]:
+            if source["identity"] != b["source"]["identity"] and not self._same_volume(
+                b["source"], source
+            ):
                 raise SafetyError("source_changed")
             b["source"] = source
             b["source_session_id"] = source["session_id"]

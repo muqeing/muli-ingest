@@ -354,8 +354,24 @@ def create_app(
             "volume_uuid",
             "filesystem",
             "mount_id",
+            "ever_connected",
+            "first_seen_at",
+            "connected_at",
+            "last_seen_at",
+            "disconnected_at",
         )
-        return {"sources": [{key: source.get(key) for key in fields} for source in engine.sources()]}
+        items = [
+            {key: source.get(key) for key in fields}
+            for source in engine.sources()
+            if source.get("connected") or source.get("ever_connected")
+        ]
+        items.sort(
+            key=lambda source: source.get("connected_at")
+            if source.get("connected")
+            else source.get("last_seen_at") or "",
+            reverse=True,
+        )
+        return {"sources": items}
 
     @app.post(f"{api}/sources/{{source_id}}/scans")
     def scan(source_id: str, payload: ScanRequest):

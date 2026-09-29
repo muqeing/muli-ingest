@@ -256,6 +256,72 @@ def test_bad_transport_hash_is_rejected_and_can_resume(engine):
     assert (e.staging / good["batch_id"] / "SOURCE_DATA/x").read_bytes() == b"original"
 
 
+def test_disconnect_then_same_uuid_resume_reuses_complete_files_and_restarts_partial(
+    tmp_path, monkeypatch
+):
+    source = tmp_path / "camera"
+    source.mkdir()
+    (source / "a.mov").write_bytes(b"a" * 128)
+    (source / "b.mov").write_bytes(b"b" * 128)
+    monkeypatch.setattr(
+        "muli_ingest.sources.mounted_volume_identity", lambda _path: (True, "CARD-UUID")
+    )
+    monkeypatch.setattr(
+        "muli_ingest.engine.mounted_volume_identity", lambda _path: (True, "CARD-UUID")
+    )
+    e = Engine(
+        tmp_path / "state",
+        tmp_path / "stage",
+        [source],
+        rclone=str(RCLONE),
+        mode="local",
+        source_labels=["Camera"],
+        source_uuids=["CARD-UUID"],
+    )
+    try:
+        sid = e.sources()[0]["source_id"]
+        scan = e.scan(sid, ["."])
+        original = e.copier.copy_and_hash
+        calls = 0
+
+        def disconnect_on_second(fd, temp, settings, check, progress):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                temp.write_bytes(b"partial")
+                raise SafetyError("source_unavailable")
+            return original(fd, temp, settings, check, progress)
+
+        e.copier.copy_and_hash = disconnect_on_second
+        interrupted = e.start(sid, scan["scan_id"], 1, "disconnect", background=False)
+        assert interrupted["state"] == "INTERRUPTED"
+        before = {item["relative_path"]: item for item in e.store.files(interrupted["batch_uid"])}
+        assert before["a.mov"]["copy_status"] == "copied_unverified"
+        assert before["b.mov"]["copy_status"] == "copying"
+        stale_partial = e.staging / interrupted["batch_id"] / ".ingest/partials" / before["b.mov"]["staged_temp"]
+        assert stale_partial.exists()
+
+        # A reconnect can change st_dev while the stable volume UUID and all
+        # file-level identity fields remain the same.
+        frozen = e.batch(interrupted["batch_uid"])
+        frozen["source"]["identity"][0] += 1000
+        e._save(frozen)
+        for item in e.store.files(interrupted["batch_uid"]):
+            item["signature"][0] += 1000
+            e.store.put_file(interrupted["batch_uid"], sid, item)
+
+        e.copier.copy_and_hash = original
+        completed = e.resume(interrupted["batch_uid"], background=False)
+        assert completed["state"] == "COMPLETED"
+        after = {item["relative_path"]: item for item in e.store.files(completed["batch_uid"])}
+        assert after["a.mov"]["attempt_count"] == 1
+        assert after["b.mov"]["attempt_count"] == 2
+        assert all(item["copy_status"] == "verified" for item in after.values())
+        assert not stale_partial.exists()
+    finally:
+        e.close()
+
+
 def test_final_receipt_preserved_on_ambiguous_restart(engine):
     e, source = engine
     (source / "x").write_bytes(b"x")

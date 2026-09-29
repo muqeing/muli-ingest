@@ -244,7 +244,15 @@ h3 { margin: 0; font-size: 14px; font-weight: 550; }
 .list-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; color: var(--muted); font-size: 11px; }
 .list-heading small { color: var(--dim); font: 8px var(--mono); letter-spacing: .06em; }
 .source-list { display: grid; gap: 12px; }
+.source-section-heading { display: flex; align-items: center; justify-content: space-between; padding: 4px 2px; font-size: 11px; }
 .source-card { padding: 20px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); }
+.source-history { margin-top: 8px; border: 1px solid var(--line); border-radius: var(--radius); background: #121814; }
+.source-history > summary { display: flex; align-items: center; justify-content: space-between; min-height: 52px; padding: 0 18px; cursor: pointer; list-style: none; font-size: 11px; }
+.source-history > summary::-webkit-details-marker { display: none; }
+.source-history > summary::before { margin-right: 10px; color: var(--green); content: "+"; font: 14px var(--mono); }
+.source-history[open] > summary::before { content: "−"; }
+.source-history-list { display: grid; gap: 10px; padding: 0 10px 10px; }
+.source-card-history { background: #101512; }
 .source-row { display: grid; grid-template-columns: 36px minmax(0, 1fr) auto; align-items: center; gap: 12px; min-width: 0; }
 .source-avatar { position: relative; display: grid; width: 36px; height: 42px; place-items: center; border: 1px solid #5f7966; border-radius: 3px; color: var(--green); background: #1c2d22; font: 14px var(--mono); }
 .source-avatar::after { position: absolute; right: 6px; bottom: 6px; left: 6px; height: 2px; background: repeating-linear-gradient(90deg, #75967e 0 1px, transparent 1px 4px); content: ""; }
@@ -254,7 +262,7 @@ h3 { margin: 0; font-size: 14px; font-weight: 550; }
 .source-row-detailed .source-row-text small { display: block; overflow: visible; -webkit-line-clamp: unset; font-size: 10px; }
 .source-status { align-self: start; padding: 4px 6px; border: 1px solid #635d46; border-radius: 2px; color: var(--gold); background: var(--gold-soft); font-size: 9px; white-space: nowrap; }
 .source-status.is-connected { color: var(--green); border-color: #3d5645; background: var(--green-soft); }
-.source-row-extra { grid-column: 2 / -1; color: var(--muted); font-size: 10px; line-height: 1.6; overflow-wrap: anywhere; }
+.source-row-extra { display: flex; grid-column: 2 / -1; justify-content: space-between; gap: 12px; color: var(--muted); font-size: 10px; line-height: 1.6; overflow-wrap: anywhere; }
 .source-card-actions { display: flex; justify-content: flex-end; margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--line-soft); }
 .media-identity { min-width: 0; margin-top: 20px; padding: 16px; border: 1px solid #35453b; border-radius: 3px; background: #111814; }
 .identity-heading { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: 6px 12px; margin-bottom: 16px; }
