@@ -8,7 +8,7 @@ def test_loopback_bind_is_allowed(host):
     assert _bind_host(host, False, {}) == host
 
 
-@pytest.mark.parametrize("host", ["0.0.0.0", "::", "192.168.50.25", "example.com"])
+@pytest.mark.parametrize("host", ["0.0.0.0", "::", "192.168.31.244", "example.com"])
 def test_non_loopback_bind_is_rejected_by_default(host):
     with pytest.raises(ValueError):
         _bind_host(host, False, {})
@@ -27,11 +27,11 @@ def test_container_all_interface_bind_requires_both_gates():
 
 def test_container_gate_never_allows_lan_address():
     with pytest.raises(ValueError):
-        _bind_host("192.168.50.25", True, {"MULI_INGEST_CONTAINER_LOOPBACK": "1"})
+        _bind_host("192.168.31.244", True, {"MULI_INGEST_CONTAINER_LOOPBACK": "1"})
 
 
 def test_lan_access_explicitly_allows_private_or_all_interface_bind():
     assert _bind_host("0.0.0.0", False, {}, lan_access=True) == "0.0.0.0"
-    assert _bind_host("192.168.50.25", False, {}, lan_access=True) == "192.168.50.25"
+    assert _bind_host("192.168.31.244", False, {}, lan_access=True) == "192.168.31.244"
     with pytest.raises(ValueError):
         _bind_host("8.8.8.8", False, {}, lan_access=True)

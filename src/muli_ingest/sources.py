@@ -113,6 +113,49 @@ def source_record(path, label=None, volume_uuid=None):
     }
 
 
+def _mount_preference(item):
+    """Prefer the stable dynamic-mount alias when one volume has aliases."""
+    path = str(item.get("path") or "")
+    parts = Path(path).parts
+    return (0 if "external" in parts else 1, path)
+
+
+def _deduplicate_mount_aliases(candidates):
+    """Collapse aliases for one mounted root without merging cloned UUIDs.
+
+    ``Root.identity`` is the local filesystem identity of the mount root.  It
+    is stronger than a volume UUID for alias discovery: two paths with the
+    same identity are aliases, while two roots with the same UUID may be
+    cloned devices and must remain separate.  The selected path is stable
+    regardless of mountinfo order, with ``/external`` preferred over the
+    less reliable compatibility alias under ``/sources``.
+    """
+    groups = {}
+    for item in candidates:
+        key = tuple(item.get("identity") or ())
+        groups.setdefault(key, []).append(item)
+
+    selected = []
+    for key in sorted(groups, key=lambda value: tuple(str(part) for part in value)):
+        group = groups[key]
+        winner = min(group, key=_mount_preference)
+        selected.append(winner)
+
+    by_uuid = {}
+    for item in selected:
+        volume_uuid = item.get("volume_uuid")
+        if volume_uuid:
+            by_uuid.setdefault(volume_uuid, set()).add(tuple(item.get("identity") or ()))
+    for item in selected:
+        volume_uuid = item.get("volume_uuid")
+        if volume_uuid and len(by_uuid.get(volume_uuid, ())) > 1:
+            # Preserve the old UUID-derived ID only for the unique-volume
+            # case.  Cloned UUIDs are path-salted and low-confidence.
+            item["source_id"] = blake3((item["source_id"] + item["path"]).encode()).hexdigest()[:24]
+            item["identity_confidence"] = "low"
+    return sorted(selected, key=lambda item: str(item.get("path") or ""))
+
+
 def disconnected_source_record(path, label=None, volume_uuid=None, reason="source_unavailable"):
     path = Path(path).absolute()
     identity_key = "uuid:" + volume_uuid if volume_uuid else "path:" + str(path)
@@ -265,12 +308,6 @@ def linux_external_mounts(protected=()):
             candidates.append(item)
         except (OSError, ValueError):
             continue
-    # Cloned UUIDs are not a trustworthy unique identity.
-    repeated = {
-        x["source_id"] for x in candidates if sum(y["source_id"] == x["source_id"] for y in candidates) > 1
-    }
-    for item in candidates:
-        if item["source_id"] in repeated:
-            item["source_id"] = blake3((item["source_id"] + item["path"]).encode()).hexdigest()[:24]
-            item["identity_confidence"] = "low"
-    return candidates
+    # Root identity deduplicates dynamic mount aliases first; only distinct
+    # roots sharing a UUID are treated as cloned devices and downgraded.
+    return _deduplicate_mount_aliases(candidates)

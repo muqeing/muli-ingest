@@ -88,17 +88,17 @@ def settings_schema():
         if key in UNSUPPORTED_SETTINGS:
             description = "预留规格默认值；当前开发版尚不执行自动调度或永久删除，不能编辑。"
         result.append(
-            {
-                "key": key,
-                "group": group,
-                "label": label,
-                "description": description,
-                "type": kind,
-                "default": s.get("default"),
-                "min": bounds.get("minimum"),
-                "max": bounds.get("maximum"),
-                "options": options,
-                "editable": key not in UNSUPPORTED_SETTINGS,
-            }
+            dict(
+                key=key,
+                group=group,
+                label=label,
+                description=description,
+                type=kind,
+                default=s.get("default"),
+                min=bounds.get("minimum"),
+                max=bounds.get("maximum"),
+                options=options,
+                editable=key not in UNSUPPORTED_SETTINGS,
+            )
         )
     return result

@@ -7,7 +7,8 @@ import shutil
 import threading
 import time
 import uuid
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -15,7 +16,7 @@ from zoneinfo import ZoneInfo
 from blake3 import blake3
 
 from .copier import RcloneCopier
-from .metadata import extract_metadata
+from .metadata import extract_metadata, extract_metadata_batch
 from .reports import retention_snapshot, write_report
 from .safeio import Root, SafetyError, atomic_json, digest_fd, digest_file, signature, sync_dir
 from .settings import UNSUPPORTED_SETTINGS, Settings, settings_schema
@@ -28,6 +29,9 @@ from .sources import (
     source_record,
 )
 from .store import Store
+from .summary import SummaryAccumulator, contribution, summarize
+from . import source_release
+from .staging_coordination import staging_guard, batch_guard
 
 
 def utcnow():
@@ -46,6 +50,7 @@ class Engine:
         allow_cleanup=False,
         source_labels=(),
         source_uuids=(),
+        handoff_config=None,
     ):
         self.mode = mode
         self.allow_cleanup = allow_cleanup
@@ -61,6 +66,8 @@ class Engine:
             if path.resolve() != path:
                 raise SafetyError("symlink_root")
             path.mkdir(parents=True, exist_ok=True, mode=0o700)
+        with staging_guard(self.staging,create=True):
+            pass
         self.archive = self.state / "archive"
         self.archive.mkdir(exist_ok=True, mode=0o700)
         # The descriptor owns the process-lifetime advisory lock and is closed in shutdown().
@@ -73,10 +80,13 @@ class Engine:
         self.store = Store(self.state / "ingest.sqlite3")
         self.lock = threading.RLock()
         self.pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="ingest")
+        # Metadata cannot occupy the four camera workers or their source slots.
+        self.metadata_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ingest-metadata")
         self.run_condition = threading.Condition(self.lock)
         self.active_runs = set()
         self.cancels = {}
         self.futures = {}
+        self.coordination_priors = {}
         self._sources = {}
         self._explicit_paths = [Path(os.path.abspath(x)) for x in sources]
         labels = list(source_labels)
@@ -102,6 +112,22 @@ class Engine:
                 b["error"] = "服务重启，等待人工核对后继续"
                 self.store.put("batch", b["batch_uid"], b)
         self.closed = False
+        # A committed release can resume from NAS after a service restart.
+        # Missing/ambiguous receipts still fail closed in the worker.
+        for pending in self.store.all("batch"):
+            if pending.get("source_released") and pending["state"] == "INTERRUPTED" and pending.get("error") == "服务重启，等待人工核对后继续":
+                self.cancels[pending["batch_uid"]] = threading.Event()
+                self._dispatch(pending["batch_uid"], background=True, released=True)
+        self.archive_handoff_worker = None
+        if handoff_config:
+            try:
+                from .handoff_protocol import configuration
+                from .archive_handoff import IngestHandoff
+                cfg = configuration(handoff_config)
+                self.archive_handoff_worker = IngestHandoff(self,cfg['outbox'],cfg['acknowledgements'])
+                self.archive_handoff_worker.start()
+            except (OSError,ValueError,KeyError,TypeError):
+                print(json.dumps({'service':'ingest-archive-handoff','status':'configuration_needs_review'}),flush=True)
 
     def refresh_sources(self):
         now = utcnow()
@@ -278,6 +304,16 @@ class Engine:
     def _save(self, b):
         self.store.put("batch", b["batch_uid"], b)
 
+    @contextmanager
+    def _stage_new_batch(self):
+        try:
+            with staging_guard(self.staging):
+                yield
+        except SafetyError:
+            raise
+        except (ValueError, OSError) as exc:
+            raise SafetyError('staging_coordination', str(exc)) from exc
+
     def start(self, sid, scan_id, scan_revision, idempotency_key, background=True):
         request_digest = blake3(json.dumps([sid, scan_id, scan_revision]).encode()).hexdigest()
         if not idempotency_key or len(idempotency_key) > 200:
@@ -310,12 +346,13 @@ class Engine:
                 raise SafetyError("stale_scan", "来源已变化，请重新扫描")
             if any(
                 b["source_id"] == sid
+                and not b.get("source_released")
                 and b["state"] in {"QUEUED", "PREPARING", "COPYING", "VERIFYING", "FINALIZING", "RECOVERING"}
                 for b in self.batches()
             ):
                 raise SafetyError("source_busy")
             cfg = self.settings()
-            with self.store.transaction():
+            with self._stage_new_batch(), self.store.transaction():
                 number = self.store.db.execute("INSERT INTO sequence DEFAULT VALUES").lastrowid
                 uid = uuid.uuid4().hex
                 batch_timezone = ZoneInfo(os.environ.get("TZ", "UTC"))
@@ -328,6 +365,10 @@ class Engine:
                 (directory / ".ingest/revisions").mkdir()
                 atomic_json(directory / ".ingest/owner.json", {"batch_uid": uid, "batch_id": bid})
                 sync_dir(self.staging)
+                # Initialize only after mkdir created this new batch. Resuming
+                # existing work must never recreate a missing/replaced lock.
+                with batch_guard(self.staging, [bid], create=True):
+                    pass
                 b = {
                     "batch_uid": uid,
                     "batch_id": bid,
@@ -386,43 +427,11 @@ class Engine:
                     "INSERT INTO requests VALUES(?,?,?)", (idempotency_key, request_digest, uid)
                 )
         self.cancels[uid] = threading.Event()
-        if background:
-            self.futures[uid] = self.pool.submit(self._run, uid)
-        else:
-            self._run(uid)
+        self._dispatch(uid, background=background)
         return self.batch(uid)
 
     def _summary(self, uid, scan):
-        files = self.store.files(uid)
-        verified = [f for f in files if f["copy_status"] == "verified"]
-        size_verified = [f for f in files if f["copy_status"] == "size_verified"]
-        staged = [f for f in files if f["copy_status"] == "copied_unverified"]
-        skipped = [f for f in files if f["copy_status"] == "skipped_existing"]
-        failed = [f for f in files if f["copy_status"] == "failed"]
-        copied = verified + size_verified + staged
-        return {
-            "selected_file_count": len(files),
-            "selected_bytes": scan["total_bytes"],
-            "source_file_count": len(files) if scan["selected_roots"] == ["."] else None,
-            "source_observed_file_count": len(files),
-            "source_scan_complete": scan["selected_roots"] == ["."],
-            "selection_scan_complete": scan["complete"],
-            "copy_required_count": len(files) - len(skipped),
-            "copied_file_count": len(copied),
-            "verified_file_count": len(verified),
-            "size_verified_file_count": len(size_verified),
-            "awaiting_hash_file_count": len(staged),
-            "previously_ingested_count": len(skipped),
-            "failed_file_count": len(failed),
-            "pending_file_count": len(files) - len(copied) - len(skipped) - len(failed),
-            "copied_bytes": sum(f["size_bytes"] for f in copied),
-            "previously_ingested_bytes": sum(f["size_bytes"] for f in skipped),
-            "photo_count": sum(f["media_type"] == "photo" for f in files),
-            "video_count": sum(f["media_type"] == "video" for f in files),
-            "other_count": sum(f["media_type"] == "other" for f in files),
-            "selected_directory_count": len(scan["directories"]),
-            "excluded_entry_count": len(scan["excluded"]),
-        }
+        return summarize(self.store.files(uid), scan)
 
     def _event(self, b, kind, **values):
         event = {"time": utcnow(), "type": kind, **values}
@@ -463,9 +472,15 @@ class Engine:
     def _source_signature_matches(source, expected, observed):
         if expected == observed:
             return True
-        # st_dev may change when the same UUID-backed card is mounted again.
-        # The volume UUID plus inode, size and timestamps remain frozen.
-        return bool(source.get("volume_uuid") and expected[1:] == observed[1:])
+        # exFAT/FAT can assign different device and inode numbers after the
+        # same card is remounted. Only relax those filesystem-local fields
+        # when the source has a high-confidence, UUID-backed identity. Size
+        # and timestamps remain frozen and copied bytes are still hash-checked.
+        return bool(
+            source.get("volume_uuid")
+            and source.get("identity_confidence") == "high"
+            and expected[2:] == observed[2:]
+        )
 
     def _progress(self, uid, stage, path=None, size=0, file_total=0):
         with self.lock:
@@ -517,7 +532,7 @@ class Engine:
         if not cfg.incremental or b["source"]["identity_confidence"] == "low":
             return None
         for prior_uid, old in self.store.history(b["source_id"], f["relative_path"], source_hash):
-            if prior_uid == b["batch_uid"]:
+            if prior_uid == b["batch_uid"] or prior_uid not in self.coordination_priors.get(b["batch_uid"], ()):
                 continue
             with self.lock:
                 prior = self.batch(prior_uid)
@@ -528,9 +543,11 @@ class Engine:
                 self._save(current)
             try:
                 destination = self.staging / prior["batch_id"] / old["destination_relative_path"]
+                before = signature(destination.stat())
                 if (
-                    destination.stat().st_size != f["size_bytes"]
+                    before[2] != f["size_bytes"]
                     or digest_file(destination, cfg.hash_threads, check) != source_hash
+                    or signature(destination.stat()) != before
                 ):
                     continue
                 # Receipt is part of the evidence, not just the database status.
@@ -547,6 +564,7 @@ class Engine:
                     "staging_relative_path": prior["batch_id"] + "/" + old["destination_relative_path"],
                     "manifest_id": receipt["manifest_id"],
                     "verified_at": utcnow(),
+                    "source_release_signature": before,
                 }
             except SafetyError as exc:
                 if exc.code in {"operator_stop", "source_or_target_unavailable", "target_unavailable"}:
@@ -694,11 +712,15 @@ class Engine:
                 )
                 self._event(b, "FILE_SIZE_VERIFIED", path=path, source_hash=h)
 
-    def _verify_staged_files(self, b, cfg):
+    def _verify_staged_files(self, b, cfg, totals=None):
         uid = b["batch_uid"]
-        for f in self.store.files(uid):
+        files = self.store.files(uid)
+        if totals is None:
+            totals = SummaryAccumulator(files, self.store.get("scan", b["scope"]["scan_id"]))
+        for f in files:
             if f["copy_status"] != "copied_unverified":
                 continue
+            before_summary = contribution(f)
             path = f["relative_path"]
             temp = self.staging / b["batch_id"] / ".ingest/partials" / f["staged_temp"]
             try:
@@ -729,9 +751,7 @@ class Engine:
                     error=None,
                 )
                 self._event(b, "FILE_PUBLISHED", path=path, hash=actual)
-                f["metadata"] = extract_metadata(
-                    destination, f["media_type"], cfg.metadata_level, cfg.metadata_timeout_seconds
-                )
+                # Metadata is collected only after the camera has been released.
             except SafetyError as exc:
                 if exc.code in {"operator_stop", "source_or_target_unavailable", "target_unavailable"}:
                     raise
@@ -751,18 +771,46 @@ class Engine:
             self.store.put_file(uid, b["source_id"], f)
             with self.lock:
                 current = self.batch(uid)
-                current["summary"] = self._summary(uid, self.store.get("scan", b["scope"]["scan_id"]))
+                current["summary"] = totals.replace(before_summary, f)
                 self._save(current)
 
     def _extract_size_only_metadata(self, b, cfg):
-        for f in self.store.files(b["batch_uid"]):
-            if f["copy_status"] != "size_verified" or f.get("metadata") is not None:
-                continue
-            destination = self.staging / b["batch_id"] / "SOURCE_DATA" / f["relative_path"]
-            f["metadata"] = extract_metadata(
-                destination, f["media_type"], cfg.metadata_level, cfg.metadata_timeout_seconds
-            )
-            self.store.put_file(b["batch_uid"], b["source_id"], f)
+        files = [f for f in self.store.files(b["batch_uid"]) if f["copy_status"] in {"size_verified", "verified"}]
+        pending = [f for f in files if f.get("metadata") is None]
+        completed = len(files) - len(pending)
+        started = time.monotonic()
+
+        def report(path=None):
+            elapsed = time.monotonic() - started
+            speed = (completed - (len(files) - len(pending))) / elapsed if elapsed > 0 else 0
+            with self.lock:
+                current = self.batch(b["batch_uid"])
+                current["progress"].update(
+                    stage="METADATA", relative_path=path, metadata_done=completed,
+                    metadata_total=len(files), metadata_files_per_second=round(speed, 2),
+                    metadata_eta_seconds=round((len(files) - completed) / speed) if speed > 0 else None,
+                    current_file_bytes=0, current_file_total_bytes=0, speed_bps=0,
+                    eta_seconds=None, sampled_at=time.time(),
+                )
+                self._save(current)
+
+        report()
+        for offset in range(0, len(pending), 32):
+            self._metadata_check(b)
+            chunk = pending[offset:offset + 32]
+            items = [(self.staging / b["batch_id"] / "SOURCE_DATA" / f["relative_path"],
+                      f["media_type"]) for f in chunk]
+            metadata = extract_metadata_batch(items, cfg.metadata_level, cfg.metadata_timeout_seconds,
+                                              checkpoint=lambda: self._metadata_check(b))
+            self._metadata_check(b)
+            # Commit the same per-file records together; report only after the
+            # durable transaction. Copy/hash/manifest safety paths stay intact.
+            with self.store.transaction():
+                for f, result in zip(chunk, metadata, strict=True):
+                    f["metadata"] = result
+                    self.store.put_file(b["batch_uid"], b["source_id"], f)
+            completed += len(chunk)
+            report(chunk[-1]["relative_path"])
 
     def _effective_parallel_limit(self):
         configured = Settings(**self.settings()["values"]).max_parallel_sources
@@ -806,15 +854,151 @@ class Engine:
             self.active_runs.discard(uid)
             self.run_condition.notify_all()
 
+    def _dispatch(self, uid, *, background, released=False):
+        if not background:
+            if released or self._run(uid):
+                self._postprocess(uid)
+            return
+        # Track the whole pipeline, not just the source worker. A queued metadata
+        # task must not be resumed concurrently through the API.
+        completion = Future()
+        with self.lock:
+            self.futures[uid] = completion
+
+        def metadata():
+            try:
+                self._postprocess(uid)
+            except Exception as exc:
+                completion.set_exception(exc)
+            else:
+                completion.set_result(None)
+
+        def source():
+            try:
+                if self._run(uid):
+                    self.metadata_pool.submit(metadata)
+                else:
+                    completion.set_result(None)
+            except Exception as exc:
+                completion.set_exception(exc)
+
+        (self.metadata_pool if released else self.pool).submit(metadata if released else source)
+
+    def _check_target(self, b):
+        if self.cancels[b["batch_uid"]].is_set():
+            raise SafetyError("operator_stop")
+        try:
+            with Root(self.staging) as root:
+                if root.identity != self.target_identity:
+                    raise SafetyError("target_unavailable")
+            with Root(self.staging / b["batch_id"]) as root:
+                if list(root.identity) != b["source_release"]["root_identity"]:
+                    raise SafetyError("target_unavailable")
+        except OSError as exc:
+            raise SafetyError("target_unavailable", str(exc)) from exc
+
+    def _metadata_check(self, b):
+        if not b.get("source_released"):
+            return self._check(b)
+        self._check_target(b)
+        # At chunk boundaries let new source copies use NAS bandwidth first.
+        # No source path, mount identity or camera handle is accessed here.
+        with self.run_condition:
+            while self.active_runs and not self.closed:
+                if self.cancels[b["batch_uid"]].is_set():
+                    raise SafetyError("operator_stop")
+                self.run_condition.wait(timeout=0.5)
+        self._check_target(b)
+
+    def _postprocess(self, uid):
+        b = self.batch(uid)
+        scan = self.store.get("scan", b["scope"]["scan_id"])
+        try:
+            files = self.store.files(uid)
+            # Protect only this batch and its actual incremental references.
+            refs = {f["existing_copy"]["batch_id"] for f in files if f.get("existing_copy")}
+            with batch_guard(self.staging, [b["batch_id"], *refs], wait=True,
+                             cancel=self.cancels[uid]):
+                self._check_target(b)
+                release = source_release.validate(self.staging, b, scan, files)
+                receipt = self.staging / b["batch_id"] / "ingest_complete.json"
+                if receipt.exists() or receipt.is_symlink():
+                    raise SafetyError("existing_receipt_requires_review")
+                b.update(state="FINALIZING", error=None)
+                b["progress"]["stage"] = "METADATA_QUEUED"
+                self._save(b)
+                cfg = Settings(**b["settings"])
+                self._metadata_check(b)
+                proofs = {}
+                source_release.check_targets(self.staging, b, files, cfg.hash_threads,
+                                             lambda: self._metadata_check(b), proofs)
+                self._extract_size_only_metadata(b, cfg)
+                self._check_target(b)
+                # Metadata can take time. Certify the selected destinations
+                # again before success; unchanged files still require no hash.
+                source_release.check_targets(self.staging, b, files, cfg.hash_threads,
+                                             lambda: self._metadata_check(b), proofs)
+                source_release.validate(self.staging, self.batch(uid), scan, self.store.files(uid))
+                self._complete_batch(uid, scan, cfg, release["whole_selection"])
+        except Exception as exc:
+            self._record_failure(uid, scan, exc)
+
     def _run(self, uid):
         if not self._acquire_run_slot(uid):
             return
         try:
-            self._run_with_slot(uid)
+            return self._run_with_slot(uid)
         finally:
             self._release_run_slot(uid)
 
+    def _coordination_scope(self, uid):
+        # Freeze eligible incremental dependencies before acquiring sorted locks.
+        # A batch completed later is copied normally, never borrowed unlocked.
+        with self.lock:
+            current = self.batch(uid)
+            eligible = {}
+            if (current['settings'].get('incremental', True) and
+                    current['source']['identity_confidence'] != 'low'):
+                # history() can reuse only verified rows at the same relative
+                # path. Use its indexed candidates, without reading media or
+                # locking every historical batch from the same camera.
+                with self.store.lock:
+                    candidates = {r['batch'] for r in self.store.db.execute(
+                        "SELECT DISTINCT h.batch FROM files h JOIN files f ON f.batch=? AND f.path=h.path "
+                        "WHERE h.source_id=? AND h.status='verified' AND h.batch<>?",
+                        (uid, current['source_id'], uid))}
+                eligible = {b['batch_uid']: b['batch_id'] for b in self.store.all('batch')
+                            if b['batch_uid'] in candidates and b['source_id'] == current['source_id']
+                            and b['state'] == 'COMPLETED'
+                            and b['lifecycle']['storage_state'] == 'ACTIVE'}
+            # A resumed file may already refer to a prior batch.
+            for row in self.store.files(uid):
+                ref = row.get('existing_copy')
+                if ref:
+                    prior = self.batch(ref['batch_uid'])
+                    if prior['batch_id'] != ref['batch_id']:
+                        raise SafetyError('staging_coordination', '增量引用的批次身份不一致')
+                    eligible[ref['batch_uid']] = ref['batch_id']
+            return current['batch_id'], eligible
+
     def _run_with_slot(self, uid):
+        try:
+            bid, priors = self._coordination_scope(uid)
+            with batch_guard(self.staging, [bid, *priors.values()], wait=True, cancel=self.cancels[uid]):
+                self.coordination_priors[uid] = frozenset(priors)
+                return self._run_with_slot_coordinated(uid)
+        except Exception as exc:
+            b = self.batch(uid)
+            b["state"] = "INTERRUPTED" if self.cancels[uid].is_set() else "FAILED"
+            b["result"] = "NOT_VERIFIED"
+            b["error"] = "staging_coordination: " + str(exc)
+            b["completed_at"] = None
+            b["progress"]["stage"] = b["state"]
+            self._save(b)
+        finally:
+            self.coordination_priors.pop(uid, None)
+
+    def _run_with_slot_coordinated(self, uid):
         b = self.batch(uid)
         scan = self.store.get("scan", b["scope"]["scan_id"])
         cfg = Settings(**b["settings"])
@@ -827,6 +1011,9 @@ class Engine:
             self._save(b)
             return
         try:
+            release_path = self.staging / b["batch_id"] / source_release.NAME
+            if release_path.exists() or release_path.is_symlink():
+                raise SafetyError("existing_source_release_requires_review")
             self._check(b)
             reserve = 5 * 1024**2 if self.mode == "demo" else 5 * 1024**3
             if shutil.disk_usage(self.staging).free < scan["total_bytes"] + reserve:
@@ -837,7 +1024,10 @@ class Engine:
             ):
                 for directory in scan["directories"]:
                     target.mkdir(directory)
-                for f in self.store.files(uid):
+                files = self.store.files(uid)
+                totals = SummaryAccumulator(files, scan)
+                for f in files:
+                    before_summary = contribution(f)
                     self._check(b)
                     for attempt in range(cfg.max_retries + 1):
                         try:
@@ -871,7 +1061,7 @@ class Engine:
                     with self.lock:
                         current = self.batch(uid)
                         current["borrowed_batches"] = []
-                        current["summary"] = self._summary(uid, scan)
+                        current["summary"] = totals.replace(before_summary, f)
                         current["progress"].update(
                             bytes=current["summary"]["copied_bytes"]
                             + current["summary"]["previously_ingested_bytes"],
@@ -889,10 +1079,9 @@ class Engine:
                         error=f.get("error"),
                     )
                 if cfg.verification_mode == "exact":
-                    self._verify_staged_files(b, cfg)
-                else:
-                    self._extract_size_only_metadata(b, cfg)
+                    self._verify_staged_files(b, cfg, totals)
                 # Certify the frozen selection, not an unbounded changing device.
+                self._progress(uid, "FINAL_SOURCE_CHECK")
                 current_scan = scan_source(b["source"], scan["selected_roots"], cfg.exclude_os_junk)
                 if not current_scan["complete"]:
                     raise SafetyError("source_changed", "终检枚举不完整")
@@ -922,74 +1111,100 @@ class Engine:
                     raise SafetyError("source_changed")
             b = self.batch(uid)
             b["summary"] = self._summary(uid, scan)
-            b["state"] = "FAILED" if b["summary"]["failed_file_count"] else "COMPLETED"
-            b["result"] = (
-                "COPY_VERIFIED"
-                if b["state"] == "COMPLETED" and cfg.verification_mode == "exact"
-                else "COPY_SIZE_VERIFIED"
-                if b["state"] == "COMPLETED"
-                else "NOT_VERIFIED"
-            )
-            b["completed_at"] = utcnow() if b["state"] == "COMPLETED" else None
-            exact_full = (
-                b["state"] == "COMPLETED"
-                and cfg.verification_mode == "exact"
-                and b["copy_mode"] == "full"
-                and len(originals) > 0
-                and set(observed) == set(originals) == set(final_observed)
-                and b["source"]["classification"] == "capture_media"
-            )
-            b["source_coverage"] = {
-                "status": (
-                    "FULLY_INGESTED"
-                    if exact_full
-                    else "FULLY_COPIED_SIZE_CHECKED"
-                    if b["state"] == "COMPLETED"
-                    and cfg.verification_mode == "size_only"
-                    and b["copy_mode"] == "full"
-                    and len(originals) > 0
-                    and set(observed) == set(originals) == set(final_observed)
-                    and b["source"]["classification"] == "capture_media"
-                    else "NOT_FULL"
-                ),
-                "scope": "volume",
-                "verified_at": utcnow() if exact_full else None,
-                "copies_verified": 1 if exact_full else 0,
-                "copies_required": 1,
-                "format_action_available": False,
-                "source_session_id": b["source_session_id"],
-            }
-            self._finish(b, scan)
+            if b["summary"] != totals.value:
+                raise SafetyError("summary_mismatch", "文件汇总与持久记录不一致")
+            whole_selection = set(observed) == set(originals) == set(final_observed)
+            if b["summary"]["failed_file_count"] or b["summary"]["pending_file_count"]:
+                # Preserve the original partial-failure result without claiming source release.
+                self._complete_batch(uid, scan, cfg, whole_selection)
+                return False
+            self._check(b)
+            released = source_release.publish(self.staging, b, scan, self.store.files(uid),
+                                              whole_selection, utcnow())
+            # Both Root contexts are closed before this durable signal is exposed.
+            b.update(source_released=True, source_release=released, state="FINALIZING")
+            b["progress"].update(stage="METADATA_QUEUED", relative_path=None,
+                                 speed_bps=0, eta_seconds=None)
+            self._save(b)
+            return True
         # The worker boundary must convert every failure into a durable batch result.
         except Exception as exc:  # noqa: BLE001
-            b = self.batch(uid)
-            code = exc.code if isinstance(exc, SafetyError) else "internal_error"
-            b["state"] = (
-                "INTERRUPTED"
-                if code
-                in {
-                    "operator_stop",
-                    "source_unavailable",
-                    "source_or_target_unavailable",
-                    "target_unavailable",
-                }
-                else "FAILED"
-            )
-            b["error"] = f"{code}: {exc}"
-            b["result"] = "NOT_VERIFIED"
-            b["completed_at"] = None
-            b["summary"] = self._summary(uid, scan)
-            b["borrowed_batches"] = []
-            if receipt_path.exists():
-                b["error"] += "; final_receipt_preserved_for_review"
-                self._save(b)
-                return
-            try:
-                self._finish(b, scan)
-            # Preserve the primary failure even if final report generation also fails.
-            except Exception as report_exc:  # noqa: BLE001
-                b["error"] += "; report_write_error: " + str(report_exc)
-                self._save(b)
+            self._record_failure(uid, scan, exc)
+            return False
+
+    def _complete_batch(self, uid, scan, cfg, whole_selection):
+        b = self.batch(uid)
+        b["summary"] = self._summary(uid, scan)
+        b["state"] = "FAILED" if any(b["summary"][name] for name in
+                ("failed_file_count", "pending_file_count", "awaiting_hash_file_count")) else "COMPLETED"
+        b["result"] = (
+            "COPY_VERIFIED"
+            if b["state"] == "COMPLETED" and cfg.verification_mode == "exact"
+            else "COPY_SIZE_VERIFIED"
+            if b["state"] == "COMPLETED"
+            else "NOT_VERIFIED"
+        )
+        b["completed_at"] = utcnow() if b["state"] == "COMPLETED" else None
+        exact_full = (
+            b["state"] == "COMPLETED"
+            and cfg.verification_mode == "exact"
+            and b["copy_mode"] == "full"
+            and len(scan["files"]) > 0
+            and whole_selection
+            and b["source"]["classification"] == "capture_media"
+        )
+        b["source_coverage"] = {
+            "status": (
+                "FULLY_INGESTED"
+                if exact_full
+                else "FULLY_COPIED_SIZE_CHECKED"
+                if b["state"] == "COMPLETED"
+                and cfg.verification_mode == "size_only"
+                and b["copy_mode"] == "full"
+                and len(scan["files"]) > 0
+                and whole_selection
+                and b["source"]["classification"] == "capture_media"
+                else "NOT_FULL"
+            ),
+            "scope": "volume",
+            "verified_at": utcnow() if exact_full else None,
+            "copies_verified": 1 if exact_full else 0,
+            "copies_required": 1,
+            "format_action_available": False,
+            "source_session_id": b["source_session_id"],
+        }
+        self._finish(b, scan)
+
+    def _record_failure(self, uid, scan, exc):
+        receipt_path = self.staging / self.batch(uid)["batch_id"] / "ingest_complete.json"
+        b = self.batch(uid)
+        code = exc.code if isinstance(exc, SafetyError) else "internal_error"
+        b["state"] = (
+            "INTERRUPTED"
+            if code
+            in {
+                "operator_stop",
+                "source_unavailable",
+                "source_or_target_unavailable",
+                "target_unavailable",
+            }
+            else "FAILED"
+        )
+        b["error"] = f"{code}: {exc}"
+        b["result"] = "NOT_VERIFIED"
+        b["completed_at"] = None
+        b["summary"] = self._summary(uid, scan)
+        b["borrowed_batches"] = []
+        if receipt_path.exists():
+            b["error"] += "; final_receipt_preserved_for_review"
+            self._save(b)
+            return
+        try:
+            self._finish(b, scan)
+        # Preserve the primary failure even if final report generation also fails.
+        except Exception as report_exc:  # noqa: BLE001
+            b["error"] += "; report_write_error: " + str(report_exc)
+            self._save(b)
 
     def _finish(self, b, scan):
         intended = b["state"]
@@ -1029,8 +1244,17 @@ class Engine:
                 raise SafetyError("cannot_resume")
             if uid in self.futures and not self.futures[uid].done():
                 raise SafetyError("batch_busy")
+            if b.get("source_released"):
+                b["state"] = "FINALIZING"
+                b["error"] = None
+                b["progress"]["stage"] = "METADATA_QUEUED"
+                self._save(b)
+                self.cancels[uid] = threading.Event()
+                self._dispatch(uid, background=background, released=True)
+                return self.batch(uid)
             if any(
                 x["source_id"] == b["source_id"]
+                and not x.get("source_released")
                 and x["batch_uid"] != uid
                 and x["state"] in {"QUEUED", "PREPARING", "COPYING", "VERIFYING", "FINALIZING", "RECOVERING"}
                 for x in self.batches()
@@ -1048,21 +1272,21 @@ class Engine:
             b["error"] = None
             self._save(b)
             self.cancels[uid] = threading.Event()
-        if background:
-            self.futures[uid] = self.pool.submit(self._run, uid)
-        else:
-            self._run(uid)
+        self._dispatch(uid, background=background)
         return self.batch(uid)
 
     def close(self):
         if self.closed:
             return
+        if self.archive_handoff_worker:
+            self.archive_handoff_worker.close()
         self.closed = True
         for event in self.cancels.values():
             event.set()
         with self.run_condition:
             self.run_condition.notify_all()
         self.pool.shutdown(wait=True, cancel_futures=True)
+        self.metadata_pool.shutdown(wait=True, cancel_futures=True)
         self.store.close()
         fcntl.flock(self.lock_file, fcntl.LOCK_UN)
         self.lock_file.close()

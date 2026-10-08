@@ -259,6 +259,50 @@ def _parse_exiftool(value: Any) -> dict[str, Any]:
     return result
 
 
+def extract_metadata_batch(items, level="standard", timeout=30, *, exiftool=None, ffprobe=None, checkpoint=None):
+    """Read up to 32 photos per process, keeping the original parser/limits.
+
+    Results are bound to exact absolute SourceFile paths; missing/duplicate or
+    unexpected output falls back to the bounded single-file reader. Videos
+    retain their ExifTool plus ffprobe path. No persistent tool or media writes.
+    """
+    items = [(Path(path).absolute(), kind) for path, kind in items]
+    if len(items) > 32:
+        raise ValueError("metadata batch exceeds 32 files")
+    if level not in ("standard", "minimal") or timeout <= 0:
+        raise ValueError("invalid metadata settings")
+    results = [None] * len(items)
+    photos = [(i, p) for i, (p, kind) in enumerate(items)
+              if level == "standard" and str(kind).lower() in ("photo", "image") and p.is_file()]
+    if len(photos) > 1 and len({str(p) for _, p in photos}) == len(photos):
+        command = [exiftool or "exiftool", "-config", "", "-json", "-G1", "-s", "-n",
+                   "-api", "QuickTimeUTC=0", *[str(p) for _, p in photos]]
+        state, raw, _ = _run_bounded(command, timeout)
+        if state == "ok":
+            try:
+                rows = _decode_json(raw)
+                if not isinstance(rows, list) or len(rows) != len(photos):
+                    raise ValueError("incomplete photo metadata batch")
+                mapped = {}
+                expected = {str(p) for _, p in photos}
+                for row in rows:
+                    if not isinstance(row, dict) or row.get("SourceFile") not in expected or row["SourceFile"] in mapped:
+                        raise ValueError("unbound photo metadata output")
+                    mapped[row["SourceFile"]] = _parse_exiftool(row)
+                # Publish no partial output if a later row failed validation.
+                for i, path in photos:
+                    results[i] = mapped[str(path)]
+                    results[i]["status"] = "ok"
+            except (UnicodeDecodeError, json.JSONDecodeError, ValueError, TypeError, KeyError):
+                pass
+    for i, (path, kind) in enumerate(items):
+        if results[i] is None:
+            if checkpoint is not None:
+                checkpoint()
+            results[i] = extract_metadata(path, kind, level, timeout, exiftool=exiftool, ffprobe=ffprobe)
+    return results
+
+
 def _parse_ffprobe(value: Any) -> dict[str, Any]:
     """Normalize ffprobe JSON while retaining original frame-rate fractions."""
     result = _empty_result("ok")

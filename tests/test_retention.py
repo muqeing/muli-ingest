@@ -1,15 +1,11 @@
-import shutil
 from datetime import timedelta
 from pathlib import Path
-
 import pytest
-
 from muli_ingest.engine import Engine
 from muli_ingest.retention import Retention, now
 from muli_ingest.safeio import SafetyError
 
-LOCAL_RCLONE = Path(__file__).resolve().parents[3] / "work/tools/rclone"
-RCLONE = LOCAL_RCLONE if LOCAL_RCLONE.is_file() else Path(shutil.which("rclone") or "")
+RCLONE = Path("/Users/zhangxuran/Documents/Codex/2026-09-27/adobe-bridge-chatgpt-conversation-6ab8d169-cc50-2/work/tools/rclone")
 
 
 @pytest.fixture

@@ -18,6 +18,7 @@ from . import __version__
 from .access import LanAccess
 from .engine import Engine
 from .retention import Retention
+from .archive_handoff import current_view
 from .safeio import SafetyError
 
 
@@ -111,6 +112,10 @@ def _error_detail(exc: SafetyError) -> str:
 def _batch_view(batch: dict[str, Any]) -> dict[str, Any]:
     """Keep the engine's useful evidence fields while guaranteeing contract keys."""
     result = dict(batch)
+    result["archive_handoff"] = current_view(batch)
+    result["lifecycle"] = {"storage_state":"ACTIVE","expires_at":None,"hold":False,"handoff_confirmed":False,"blocked_reasons":[], **(batch.get("lifecycle") or {})}
+    if result["lifecycle"].get("handoff_evidence") == "archive_receipt" and result["archive_handoff"]["status"] != "confirmed":
+        result["lifecycle"]["handoff_confirmed"] = False
     result.setdefault("source_label", result.get("source_id"))
     result.setdefault("error", None)
     result.setdefault("summary", {})

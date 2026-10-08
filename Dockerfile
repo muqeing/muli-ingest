@@ -30,7 +30,7 @@ RUN groupadd --gid "${APP_GID}" muli \
 COPY --from=rclone /usr/local/bin/rclone /usr/local/bin/rclone
 
 WORKDIR /app
-COPY pyproject.toml README.md LICENSE ./
+COPY pyproject.toml README.md ./
 COPY src ./src
 RUN python -m pip install --no-cache-dir --no-compile .
 

@@ -4,11 +4,10 @@ import contextlib
 import ctypes
 import json
 import os
+from pathlib import Path
 import stat
 import sys
 import uuid
-from pathlib import Path
-
 from blake3 import blake3
 
 

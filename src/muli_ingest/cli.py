@@ -184,6 +184,7 @@ def main(argv: list[str] | None = None) -> None:
             rclone=rclone,
             mode="demo" if args.demo else "local",
             allow_cleanup=False,
+            handoff_config=os.environ.get("MULI_INGEST_HANDOFF_CONFIG"),
             source_labels=args.source_label,
             source_uuids=args.source_uuid,
         )

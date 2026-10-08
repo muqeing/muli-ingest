@@ -5,7 +5,9 @@ Permanent purge is intentionally unavailable in this development release.
 
 import json
 import uuid
-from datetime import UTC, datetime, timedelta
+from functools import wraps
+from .staging_coordination import staging_guard
+from datetime import datetime, timedelta, timezone
 
 from .safeio import Root, SafetyError, atomic_bytes, atomic_json, digest_file, move_directory
 from .sources import scan_source, source_record
@@ -14,7 +16,20 @@ ACTIVE = {"QUEUED", "PREPARING", "COPYING", "VERIFYING", "FINALIZING", "RECOVERI
 
 
 def now():
-    return datetime.now(UTC)
+    return datetime.now(timezone.utc)
+
+
+def coordinated_retention(method):
+    @wraps(method)
+    def call(self,*args,**kwargs):
+        try:
+            with staging_guard(self.e.staging, exclusive=True):
+                return method(self,*args,**kwargs)
+        except SafetyError:
+            raise  # Preserve an explicit cleanup-disabled/verification refusal.
+        except ValueError as exc:
+            raise SafetyError("staging_busy",str(exc)) from exc
+    return call
 
 
 class Retention:
@@ -25,6 +40,11 @@ class Retention:
         clock = clock or now()
         life = b["lifecycle"]
         reasons = []
+        from .archive_handoff import current_view
+        if life.get("archive_sources_moved"):
+            reasons.append("来源已被归档移出，不进入旧中转清理流程")
+        if life.get("handoff_evidence") == "archive_receipt" and current_view(b, clock.timestamp())["status"] != "confirmed":
+            reasons.append("自动转存凭据已失效，需要重新核对")
         cfg = self.e.settings()["values"]
         if not cfg["cleanup_enabled"] or cfg["cleanup_paused"]:
             reasons.append("全局清理已关闭或暂停")
@@ -201,6 +221,7 @@ class Retention:
                 raise SafetyError("data_hash_mismatch")
         return receipt
 
+    @coordinated_retention
     def execute(self, plan_id, confirmed):
         if confirmed is not True:
             raise SafetyError("confirmation_required")
@@ -258,8 +279,7 @@ class Retention:
                     atomic_json(archive / "lifecycle.json", b["lifecycle"])
                     self.e._save(b)
                     results.append({"batch_uid": b["batch_uid"], "state": "TRASHED"})
-                # Each batch needs a durable failure state even for unexpected I/O errors.
-                except Exception as exc:  # noqa: BLE001
+                except Exception as exc:
                     b["lifecycle"]["storage_state"] = "CLEANUP_FAILED"
                     self.e._save(b)
                     results.append(
@@ -267,6 +287,7 @@ class Retention:
                     )
             return {"results": results}
 
+    @coordinated_retention
     def restore(self, uid):
         if not self.e.allow_cleanup:
             raise SafetyError("cleanup_runtime_disabled")

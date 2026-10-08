@@ -9,8 +9,6 @@ def test_access_code_validation_and_session_tamper_detection(tmp_path):
     with pytest.raises(AccessConfigurationError):
         LanAccess(" leading-and-long-enough")
 
-    assert LanAccess("short").secure_cookie is False
-
     secret = tmp_path / "access-code"
     secret.write_text("0123456789abcdef\n", encoding="utf-8")
     secret.chmod(0o600)

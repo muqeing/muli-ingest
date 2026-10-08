@@ -1,8 +1,6 @@
 import os
-
 import pytest
-
-from muli_ingest.safeio import Root, SafetyError, digest_file, publish_file
+from muli_ingest.safeio import Root, digest_file, publish_file, SafetyError
 from muli_ingest.settings import Settings
 
 
@@ -24,8 +22,9 @@ def test_beneath_no_links_or_traversal(tmp_path):
     (source / "link").symlink_to(tmp_path / "secret")
     with Root(source) as root:
         for path in ["../secret", "/etc/passwd", "link", "a//b"]:
-            with pytest.raises((SafetyError, OSError)), root.file(path):
-                pass
+            with pytest.raises((SafetyError, OSError)):
+                with root.file(path):
+                    pass
 
 
 def test_new_content_same_attributes_different_digest(tmp_path):

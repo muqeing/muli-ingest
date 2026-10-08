@@ -5,6 +5,7 @@
   const state = {
     page: 'overview', sources: [], batches: [], selectedBatchId: null, status: null, statusLoading: true,
     scan: { sourceId: '', scanId: '', revision: null, roots: ['.'], requestedRoots: ['.'], directories: [], files: [], complete: false },
+    bulk: { selected: [], scans: {}, errors: {}, scanning: false, starting: false },
     settings: null, retention: null, cleanupPlan: null, files: {}, polling: null, modalAction: null, modalTrigger: null,
     loaded: { sources: false, batches: false }, errors: { sources: null, batches: null, status: null },
     session: null, appReady: false, sessionChecking: false, accessPending: false, authEpoch: 0, requests: new Set()
@@ -71,6 +72,7 @@
     if (!state.appReady && !$('#access-gate').hidden) return;
     state.session = { ...state.session, required: true, authenticated: false };
     state.scan = { sourceId: '', scanId: '', revision: null, roots: ['.'], requestedRoots: ['.'], directories: [], files: [], complete: false };
+    state.bulk = { selected: [], scans: {}, errors: {}, scanning: false, starting: false };
     state.settings = null; state.retention = null; state.cleanupPlan = null; state.files = {};
     showAccessGate(message);
   }
@@ -94,7 +96,7 @@
     return session;
   }
   async function openWorkspace() {
-    state.appReady = true;
+    state.appReady = true; renderWorkflowNavigation();
     $('#access-gate').hidden = true; $('#access-connection').hidden = true;
     $('#access-code').value = '';
     $('#app-shell').hidden = false; $('#app-shell').inert = false; $('.skip-link').hidden = false;
@@ -172,7 +174,37 @@
   }
   function formatDate(value) { if (!value) return '—'; const date = new Date(value); return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString('zh-CN', { hour12: false, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }); }
   function formatCount(value) { return Number.isFinite(Number(value)) ? Number(value).toLocaleString('zh-CN') : '—'; }
-  function stateLabel(value) { return ({ COMPLETED: '已完成', COPY_VERIFIED: '精准核验通过', COPY_SIZE_VERIFIED: '数量与大小已核验', VERIFIED: '精准核验通过', SIZE_VERIFIED: '大小已核验', COPIED_UNVERIFIED: '已复制待 Hash', ALREADY_INGESTED: '历史引用', SKIPPED_EXISTING: '历史引用', COPIED: '已复制', RUNNING: '复制中', COPYING: '复制中', SCANNING: '扫描中', VERIFYING: '集中核验中', FINAL_SOURCE_CHECK: '来源终检', FINALIZING: '整理中', PREPARING: '准备中', RECOVERING: '恢复中', INTERRUPTED: '待处理', FAILED: '失败', PENDING: '排队中', QUEUED: '排队中', CANCELLED: '已取消', CLEANUP_FAILED: '清理失败', TRASHED: '回收站', PURGED: '已清理', ACTIVE: '留存中' }[String(value || '').toUpperCase()] || value || '未知'); }
+  const archiveHandoffStatusLabels = { pending: '后台核对中', partial: '部分已转存', confirmed: '全部已确认转存', needs_review: '需要核对' };
+  const archiveDispositionLabels = { retained: '来源保留', partly_moved: '部分已转移', moved: '来源已转移', unknown: '来源状态未知' };
+  function archiveHandoffView(batch) {
+    const raw = batch?.archive_handoff;
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { status: 'unknown', label: '未同步', qualified: false, expired: false, countsValid: false, confirmed: null, total: null, missing: null, jobs: [], note: '旧版批次未提供后台转存反馈；不能据此判断已转存。' };
+    const status = Object.prototype.hasOwnProperty.call(archiveHandoffStatusLabels, raw.status) ? raw.status : 'needs_review';
+    const total = Number(raw.total_file_count); const confirmed = Number(raw.confirmed_file_count); const missing = Number(raw.missing_file_count);
+    const countsValid = [total, confirmed, missing].every((value) => Number.isInteger(value) && value >= 0) && confirmed <= total && missing <= total;
+    const checkedTime = raw.checked_at == null ? null : Date.parse(raw.checked_at);
+    const expiryTime = raw.expires_at == null ? null : Date.parse(raw.expires_at);
+    const checkedValid = Number.isFinite(checkedTime);
+    const expiryValid = Number.isFinite(expiryTime);
+    const expired = expiryValid && expiryTime <= Date.now();
+    const qualified = status === 'confirmed' && countsValid && total > 0 && confirmed === total && missing === 0 && checkedValid && expiryValid && !expired;
+    let note = '当前仅展示后台反馈，仍需后台完成核对。';
+    if (status === 'confirmed' && qualified) note = '已自动确认整批转存。';
+    else if (status === 'confirmed' && total === 0) note = '反馈标记为全部确认，但总文件数为 0，不能形成整批资格。';
+    else if (status === 'confirmed' && (!checkedValid || !expiryValid)) note = '反馈缺少有效核对时间或资格期限，需要重新核对。';
+    else if (status === 'confirmed' && expired) note = '反馈曾确认全部文件，但已过期，需要重新核对。';
+    else if (status === 'partial') note = '后台仅确认部分文件，仍需完成核对。';
+    else if (status === 'needs_review') note = raw.reason ? `后台要求复核：${esc(raw.reason)}` : '后台反馈要求复核，不能形成整批资格。';
+    const jobs = Array.isArray(raw.jobs) ? raw.jobs.filter((job) => job && /^[0-9a-f]{64}$/.test(String(job.job_id || '')) && typeof job.project_name === 'string') : [];
+    const displayNeedsReview = status === 'confirmed' && !qualified;
+    return { status, label: archiveHandoffStatusLabels[status], displayStatus: displayNeedsReview ? 'needs_review' : status, displayLabel: displayNeedsReview ? '需要重新核对' : archiveHandoffStatusLabels[status], qualified, expired, countsValid, confirmed, total, missing, jobs, note, raw };
+  }
+  function stateLabel(value) { return ({ COMPLETED: '已完成', COPY_VERIFIED: '精准核验通过', COPY_SIZE_VERIFIED: '数量与大小已核验', VERIFIED: '精准核验通过', SIZE_VERIFIED: '大小已核验', COPIED_UNVERIFIED: '已复制待 Hash', ALREADY_INGESTED: '历史引用', SKIPPED_EXISTING: '历史引用', COPIED: '已复制', RUNNING: '复制中', COPYING: '复制中', SCANNING: '扫描中', VERIFYING: '集中核验中', METADATA_QUEUED: '拍摄信息排队中', METADATA: '读取拍摄信息', FINAL_SOURCE_CHECK: '来源终检', FINALIZING: '整理中', PREPARING: '准备中', RECOVERING: '恢复中', INTERRUPTED: '待处理', FAILED: '失败', PENDING: '排队中', QUEUED: '排队中', CANCELLED: '已取消', CLEANUP_FAILED: '清理失败', TRASHED: '回收站', PURGED: '已清理', ACTIVE: '留存中' }[String(value || '').toUpperCase()] || value || '未知'); }
+  function metadataStage(batch) { const stage = String(batch?.progress?.stage || '').toUpperCase(); return ['METADATA_QUEUED', 'METADATA'].includes(stage) ? stage : null; }
+  function displayState(batch) { return metadataStage(batch) || batch?.state; }
+  function sourceReleased(batch) { return batch?.source_released === true && batch?.source_release && typeof batch.source_release === 'object' && !Array.isArray(batch.source_release); }
+  function sourceReleaseProgressNote(batch) { const state = String(batch?.state || '').toUpperCase(); if (['COMPLETED', 'COPY_VERIFIED'].includes(state)) return '拍摄信息后台整理已完成。'; if (['FAILED', 'INTERRUPTED'].includes(state)) return '拍摄信息后台处理待继续。'; if (isActive(batch)) return '拍摄信息在 NAS 后台处理中。'; return '拍摄信息在 NAS 后台处理。'; }
+  function releasedFailure(batch) { return sourceReleased(batch) && ['FAILED', 'INTERRUPTED'].includes(String(batch?.state || '').toUpperCase()); }
   function stateClass(value) { return `status-${String(value || 'unknown').toLowerCase().replace(/[^a-z0-9_-]/g, '-')}`; }
   function isActive(batch) { return ['RUNNING', 'COPYING', 'SCANNING', 'VERIFYING', 'FINALIZING', 'PREPARING', 'RECOVERING', 'PENDING', 'QUEUED'].includes(String(batch?.state || '').toUpperCase()); }
   function batchId(batch) { return batch?.batch_id || batch?.batch_uid || ''; }
@@ -359,7 +391,7 @@
     setText('#flow-state', !state.status ? '服务未连接' : !state.loaded.batches ? '读取队列中' : active.length ? `${active.length} 个批次进行中` : '队列空闲 / IDLE');
     setText('#flow-source-title', !state.loaded.sources ? '等待来源数据' : connected.length === 1 ? connected[0].label || '已连接来源' : connected.length ? `${connected.length} 个来源已连接` : '未连接来源');
     setText('#flow-source-note', connected.length ? '只读扫描 · 原始文件保留' : '连接来源后刷新状态');
-    setText('#flow-process-title', active.length ? stateLabel(active[0].state) : '先扫描，再手动启动');
+    setText('#flow-process-title', active.length ? stateLabel(displayState(active[0])) : '先扫描，再手动启动');
     setText('#flow-process-note', active.length ? active[0].progress?.relative_path || '等待服务端进度' : '来源与目标独立核验');
     const root = stagingRoot();
     const target = setText('#flow-target-note', root ? root.split('/').filter(Boolean).slice(-2).join('/') : state.statusLoading ? '正在读取路径' : state.errors.status ? '服务离线 · 路径未确认' : '未返回中转路径');
@@ -368,18 +400,103 @@
   function empty(icon, title, body, compact = false) { const node = make('div', `empty-state${compact ? ' compact' : ''}`); const symbol = make('span', 'empty-icon', icon); symbol.setAttribute('aria-hidden', 'true'); node.append(symbol, make('strong', '', title), make('p', '', body)); return node; }
   function batchRow(batch, compact = false) {
     const button = make('button', `batch-row ${compact ? 'batch-row-compact' : ''}`, ''); button.type = 'button'; button.dataset.batchId = batchId(batch); button.classList.toggle('is-selected', state.selectedBatchId === batchId(batch)); button.setAttribute('aria-pressed', String(state.selectedBatchId === batchId(batch)));
-    const title = batch.source_label || batch.source_id || '未命名来源'; const top = make('div', 'row-top'); top.append(make('strong', 'row-title', title), make('span', `status-tag ${stateClass(batch.state)}`, stateLabel(batch.state)));
-    const meta = make('div', 'row-meta'); meta.append(make('span', '', formatDate(batch.created_at)), make('span', '', `${formatCount(batch.summary?.selected_file_count)} 个文件`)); if (isActive(batch)) meta.append(make('span', 'row-speed', formatSpeed(batch.progress?.speed_bps)));
-    const bottom = make('div', 'row-bottom'); const progress = make('div', 'progress-track'); const bar = make('span', 'progress-bar'); const pct = progressPercent(batch); bar.style.width = `${pct}%`; progress.setAttribute('role', 'progressbar'); progress.setAttribute('aria-label', '批次复制进度'); progress.setAttribute('aria-valuenow', String(pct)); progress.setAttribute('aria-valuemin', '0'); progress.setAttribute('aria-valuemax', '100'); progress.append(bar); bottom.append(progress, make('span', 'progress-value', `${pct}%`));
+    const title = batch.source_label || batch.source_id || '未命名来源'; const top = make('div', 'row-top'); top.append(make('strong', 'row-title', title), make('span', `status-tag ${stateClass(batch.state)}`, stateLabel(displayState(batch))));
+    const meta = make('div', 'row-meta'); meta.append(make('span', '', formatDate(batch.created_at)), make('span', '', `${formatCount(batch.summary?.selected_file_count)} 个文件`)); if (isActive(batch) && !metadataStage(batch)) meta.append(make('span', 'row-speed', formatSpeed(batch.progress?.speed_bps)));
+    const bottom = make('div', 'row-bottom'); const progress = make('div', 'progress-track'); const bar = make('span', 'progress-bar'); const pct = progressPercent(batch); bar.style.width = `${pct}%`; progress.setAttribute('role', 'progressbar'); progress.setAttribute('aria-label', metadataStage(batch) ? '拍摄信息读取进度' : '批次复制进度'); progress.setAttribute('aria-valuenow', String(pct)); progress.setAttribute('aria-valuemin', '0'); progress.setAttribute('aria-valuemax', '100'); progress.append(bar); bottom.append(progress, make('span', 'progress-value', `${pct}%`));
     button.append(top, meta, bottom); button.addEventListener('click', () => { selectBatch(batchId(batch)); if (compact) go('batches'); }); return button;
   }
   function sourceRow(source, detailed = true) { const row = make('div', `source-row ${detailed ? 'source-row-detailed' : ''}`); const icon = make('span', 'source-avatar', 'M'); icon.setAttribute('aria-hidden', 'true'); const text = make('div', 'source-row-text'); text.append(make('strong', '', source.label || source.source_id || '未命名来源'), make('small', '', source.path || '路径由服务端配置')); text.title = source.path || ''; const status = make('span', `source-status ${source.connected ? 'is-connected' : ''}`, source.connected ? '已连接' : '曾经连接'); row.append(icon, text, status); if (detailed) { const info = make('div', 'source-row-extra'); info.append(make('span', '', `${({ transfer_storage: '中转介质', camera_card: '相机存储卡', local_directory: '本地目录', capture_media: '拍摄介质' })[source.classification] || source.classification || '未分类'}`), make('span', '', source.connected ? `连接于 ${formatDate(source.connected_at || source.last_seen_at)}` : `最近连接 ${formatDate(source.last_seen_at || source.disconnected_at)}`)); row.append(info); } return row; }
-  function recentItem(batch) { const item = make('button', 'recent-item', ''); item.type = 'button'; item.append(make('span', 'recent-dot'), make('strong', '', batch.source_label || batch.source_id || '未命名来源'), make('small', '', `${stateLabel(batch.state)} · ${formatDate(batch.completed_at || batch.created_at)}`)); item.addEventListener('click', () => { selectBatch(batchId(batch)); go('batches'); }); return item; }
-  function progressPercent(batch) { const state = String(batch.state || '').toUpperCase(); if (['COMPLETED', 'COPY_VERIFIED'].includes(state)) return 100; const progress = batch.progress || {}; const total = Number(progress.total_bytes || batch.summary?.selected_bytes || 0); const current = Number(progress.bytes || batch.summary?.copied_bytes || 0); if (!total || !Number.isFinite(current)) return 0; return Math.max(0, Math.min(100, Math.round(current / total * 100))); }
+  function recentItem(batch) { const item = make('button', 'recent-item', ''); item.type = 'button'; item.append(make('span', 'recent-dot'), make('strong', '', batch.source_label || batch.source_id || '未命名来源'), make('small', '', `${stateLabel(displayState(batch))} · ${formatDate(batch.completed_at || batch.created_at)}`)); item.addEventListener('click', () => { selectBatch(batchId(batch)); go('batches'); }); return item; }
+  function progressPercent(batch) { const state = String(batch.state || '').toUpperCase(); if (['COMPLETED', 'COPY_VERIFIED'].includes(state)) return 100; const progress = batch.progress || {}; if (metadataStage(batch)) return progress.metadata_total > 0 ? Math.max(0, Math.min(100, Math.round(progress.metadata_done / progress.metadata_total * 100))) : 0; const total = Number(progress.total_bytes || batch.summary?.selected_bytes || 0); const current = Number(progress.bytes || batch.summary?.copied_bytes || 0); if (!total || !Number.isFinite(current)) return 0; return Math.max(0, Math.min(100, Math.round(current / total * 100))); }
+
+  function connectedBulkSources() {
+    return state.sources.filter((source) => source.connected && sourceId(source));
+  }
+  function resetBulkScans() {
+    state.bulk.scans = {}; state.bulk.errors = {};
+  }
+  function setBulkSelection(ids) {
+    const connected = new Set(connectedBulkSources().map(sourceId));
+    state.bulk.selected = Array.from(new Set(ids)).filter((id) => connected.has(id));
+    resetBulkScans(); renderSources();
+  }
+  function syncBulkSelection() {
+    const connected = new Set(connectedBulkSources().map(sourceId));
+    const next = state.bulk.selected.filter((id) => connected.has(id));
+    if (next.length !== state.bulk.selected.length) { state.bulk.selected = next; resetBulkScans(); }
+  }
+  function bulkScanReady() {
+    return state.bulk.selected.length > 0 && state.bulk.selected.every((id) => state.bulk.scans[id]?.complete === true && !state.bulk.errors[id]);
+  }
+  function renderBulkControls() {
+    const connected = connectedBulkSources(); const selected = new Set(state.bulk.selected);
+    const all = $('#bulk-select-all'); if (all) { all.checked = connected.length > 0 && connected.every((source) => selected.has(sourceId(source))); all.indeterminate = selected.size > 0 && !all.checked; all.disabled = !connected.length || state.bulk.scanning || state.bulk.starting; }
+    setText('#bulk-selection-count', `已选择 ${selected.size} / ${connected.length} 个`);
+    const scanButton = $('#bulk-scan-button'); if (scanButton && !scanButton.dataset.busy) { scanButton.disabled = !selected.size || state.bulk.starting; scanButton.textContent = selected.size ? `扫描所选设备（${selected.size}）` : '扫描所选设备'; }
+    const startButton = $('#bulk-start-button'); if (startButton && !startButton.dataset.busy) { const pending = state.bulk.selected.filter((id) => state.bulk.scans[id]?.status !== 'started'); startButton.disabled = !bulkScanReady() || !pending.length || state.bulk.scanning; startButton.textContent = pending.length && bulkScanReady() ? `全部开始复制（${pending.length}）` : '全部开始复制'; }
+    const results = $('#bulk-scan-results'); if (!results) return; results.replaceChildren();
+    const ids = state.bulk.selected;
+    if (!ids.length || (!state.bulk.scanning && !Object.keys(state.bulk.scans).length && !Object.keys(state.bulk.errors).length)) { results.hidden = true; setText('#bulk-ingest-note', '扫描不会开始复制。每张卡会保留独立批次、进度、续拷状态和最终回执。'); return; }
+    results.hidden = false;
+    ids.forEach((id) => {
+      const source = state.sources.find((item) => sourceId(item) === id); const scan = state.bulk.scans[id]; const error = state.bulk.errors[id];
+      const row = make('div', `bulk-result ${error ? 'is-error' : scan?.status === 'started' ? 'is-started' : scan?.complete ? 'is-ready' : ''}`);
+      const text = make('div', 'bulk-result-copy'); text.append(make('strong', '', source?.label || id));
+      if (error) text.append(make('small', '', error));
+      else if (scan?.status === 'started') text.append(make('small', '', `${formatCount(scan.fileCount)} 个文件 · ${formatBytes(scan.totalBytes)} · 已创建批次`));
+      else if (scan?.complete) text.append(make('small', '', `${formatCount(scan.fileCount)} 个文件 · ${formatBytes(scan.totalBytes)} · 可以开始`));
+      else text.append(make('small', '', '正在扫描全卷…'));
+      const status = make('span', 'bulk-result-status', error ? '扫描失败' : scan?.status === 'started' ? '已启动' : scan?.complete ? '扫描完成' : '扫描中');
+      row.append(text, status); results.append(row);
+    });
+    const failed = Object.keys(state.bulk.errors).length; const ready = ids.filter((id) => state.bulk.scans[id]?.complete).length;
+    setText('#bulk-ingest-note', failed ? `${failed} 个来源扫描失败。请检查连接后重新扫描，失败未清除前不会批量启动。` : state.bulk.scanning ? `正在扫描 ${ids.length} 个来源…` : ready === ids.length ? '全部来源扫描完成。确认后将为每个来源创建独立批次。' : '等待全部来源扫描完成。');
+  }
+  async function scanBulkSources() {
+    const ids = [...state.bulk.selected]; if (!ids.length || state.bulk.scanning) return;
+    state.bulk.scanning = true; state.bulk.scans = {}; state.bulk.errors = {};
+    const button = $('#bulk-scan-button'); button.dataset.busy = '1'; setBusy(button, true, `扫描 0 / ${ids.length}`); renderBulkControls();
+    let finished = 0;
+    await Promise.all(ids.map(async (id) => {
+      try {
+        const result = await request(`/sources/${encodeURIComponent(id)}/scans`, { method: 'POST', body: JSON.stringify({ selected_roots: ['.'] }) });
+        const files = result.files || []; const errors = result.errors || [];
+        if (!result.complete || errors.length) throw new Error(errors.length ? `${errors.length} 个路径无法读取` : '扫描未完整完成');
+        state.bulk.scans[id] = { sourceId: id, scanId: result.scan_id, revision: result.revision, complete: true, fileCount: files.length, totalBytes: files.reduce((sum, file) => sum + Number(file.size_bytes || 0), 0), status: 'ready' };
+      } catch (error) { state.bulk.errors[id] = error.message || '扫描失败'; }
+      finally { finished += 1; setBusy(button, true, `扫描 ${finished} / ${ids.length}`); renderBulkControls(); }
+    }));
+    state.bulk.scanning = false; delete button.dataset.busy; setBusy(button, false, '扫描所选设备'); renderBulkControls();
+    if (bulkScanReady()) notify(`${ids.length} 个来源全部扫描完成，请确认后统一开始复制。`, 'success'); else notify('部分来源扫描失败，未开始复制。', 'error');
+  }
+  function confirmBulkStart() {
+    if (!bulkScanReady() || state.bulk.starting) return;
+    const ready = state.bulk.selected.filter((id) => state.bulk.scans[id]?.status !== 'started');
+    const totalFiles = ready.reduce((sum, id) => sum + Number(state.bulk.scans[id]?.fileCount || 0), 0);
+    const totalBytes = ready.reduce((sum, id) => sum + Number(state.bulk.scans[id]?.totalBytes || 0), 0);
+    openConfirm({ eyebrow: '批量接收', title: `开始接收 ${ready.length} 个来源？`, body: `将按全卷扫描结果创建 ${ready.length} 个独立批次，共 ${formatCount(totalFiles)} 个文件、${formatBytes(totalBytes)}。每张卡分别核验并生成回执。`, confirmLabel: '全部开始复制', onConfirm: startBulkBatches });
+  }
+  async function startBulkBatches() {
+    const ids = state.bulk.selected.filter((id) => state.bulk.scans[id]?.complete && state.bulk.scans[id]?.status !== 'started'); if (!ids.length) return;
+    state.bulk.starting = true; const button = $('#bulk-start-button'); button.dataset.busy = '1'; setBusy(button, true, `创建 0 / ${ids.length}`); renderBulkControls();
+    let finished = 0; let started = 0;
+    await Promise.all(ids.map(async (id) => {
+      const scan = state.bulk.scans[id];
+      try {
+        const result = await request('/batches', { method: 'POST', headers: { 'Idempotency-Key': (crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}-${id}`) }, body: JSON.stringify({ source_id: id, scan_id: scan.scanId, scan_revision: scan.revision }) });
+        const batch = result?.batch || result; scan.status = 'started'; scan.batchId = batchId(batch); delete state.bulk.errors[id]; started += 1;
+      } catch (error) { state.bulk.errors[id] = `创建批次失败：${error.message || '未知错误'}`; }
+      finally { finished += 1; setBusy(button, true, `创建 ${finished} / ${ids.length}`); renderBulkControls(); }
+    }));
+    state.bulk.starting = false; delete button.dataset.busy; setBusy(button, false, '全部开始复制'); renderBulkControls(); await loadBatches();
+    if (started) { notify(`已创建 ${started} 个独立批次，复制由服务端并行队列执行。`, 'success'); go('batches'); }
+    if (started !== ids.length) notify(`${ids.length - started} 个来源未能创建批次，可返回来源设备重试。`, 'error');
+  }
 
   function renderSources() {
     const list = $('#source-list'); if (!list) return;
     const focusKey = document.activeElement?.dataset.identityKey;
+    syncBulkSelection();
     list.replaceChildren();
     if (state.errors.sources) list.append(empty('!', '来源读取失败', state.errors.sources + '，请刷新重试。'));
     else if (!state.loaded.sources) list.append(empty('—', '正在读取来源', '等待本地服务返回介质身份。'));
@@ -395,6 +512,7 @@
         card.append(sourceRow(source, true), identityBlock(source, { context: source.label || '来源', key: `source:${sourceId(source)}`, demo: isDemoDirectory(source) }));
         const actions = make('div', 'source-card-actions');
         const available = Boolean(sourceId(source));
+        const bulkLabel = make('label', 'bulk-source-select'); const bulkInput = document.createElement('input'); bulkInput.type = 'checkbox'; bulkInput.checked = state.bulk.selected.includes(sourceId(source)); bulkInput.disabled = !available || state.bulk.scanning || state.bulk.starting; bulkInput.addEventListener('change', () => { const selected = new Set(state.bulk.selected); if (bulkInput.checked) selected.add(sourceId(source)); else selected.delete(sourceId(source)); setBulkSelection([...selected]); }); bulkLabel.append(bulkInput, make('span', '', '加入批量接收')); actions.append(bulkLabel);
         const button = make('button', 'button button-secondary', available ? '选择此来源' : '来源身份未提供');
         button.type = 'button'; button.disabled = !available;
         button.title = available ? '选择此来源后手动扫描' : '来源缺少卡 ID，不能扫描';
@@ -422,6 +540,7 @@
     }
     renderScanIdentity();
     updateScanControls();
+    renderBulkControls();
     if (focusKey) $$('[data-identity-key]').find((node) => node.dataset.identityKey === focusKey)?.focus({ preventScroll: true });
   }
   function scanSourceAvailable() { return Boolean(state.sources.find((source) => sourceId(source) === state.scan.sourceId)?.connected); }
@@ -450,27 +569,124 @@
   function renderBatches() { const focused = document.activeElement; const focusAction = focused?.dataset.action; const focusIdentity = focused?.dataset.identityKey; const focusBatch = focused?.dataset.batchId; const list = $('#batch-list'); if (!list) return; list.replaceChildren(); if (!state.loaded.batches && state.errors.batches) list.append(empty('!', '批次读取失败', state.errors.batches + '，请刷新重试。')); else if (!state.batches.length) list.append(empty('—', '还没有批次', '完成一次扫描后，手动开始的批次会出现在这里。')); else state.batches.forEach((batch) => list.append(batchRow(batch))); renderBatchDetail(); if (focusIdentity) $$('[data-identity-key]', $('#batch-detail')).find((node) => node.dataset.identityKey === focusIdentity)?.focus({ preventScroll: true }); else if (focusAction) $(`[data-action="${CSS.escape(focusAction)}"]`)?.focus({ preventScroll: true }); else if (focusBatch) $(`[data-batch-id="${CSS.escape(focusBatch)}"]`, list)?.focus({ preventScroll: true }); }
   function selectBatch(id) { if (!id) return; state.selectedBatchId = id; renderBatches(); }
   function getSelectedBatch() { return state.batches.find((batch) => batchId(batch) === state.selectedBatchId); }
+  function archiveWorkflowUrl(id, jobId = null) {
+    try {
+      const base = window.MULI_WORKFLOW_LINKS?.archiveBaseUrl;
+      if (!base) return null;
+      const url = new URL(base);
+      if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash || !['', '/'].includes(url.pathname)) return null;
+      if (id) url.searchParams.set('batch_id', id);
+      if (jobId != null) {
+        const value = String(jobId);
+        if (!/^[0-9a-f]{64}$/.test(value)) return null;
+        url.searchParams.set('job_id', value);
+      }
+      return url.href;
+    } catch (_) { return null; }
+  }
+  let workflowBatchApplied = false;
+  function locateWorkflowBatch() {
+    if (workflowBatchApplied || !state.appReady || !state.loaded.batches) return;
+    workflowBatchApplied = true;
+    const id = new URL(location.href).searchParams.get('batch_id');
+    if (!id) return;
+    if (!/^BATCH_\d{8}_\d{6,}$/.test(id)) { notify('批次地址格式无效，请在批次记录中选择。', 'error'); return; }
+    go('batches');
+    if (state.batches.some((batch) => batchId(batch) === id)) selectBatch(id);
+    else notify('暂未找到这个批次，请核对批次记录。', 'error');
+  }
+  function renderWorkflowNavigation() {
+    const url = archiveWorkflowUrl();
+    ['#workflow-archive-navigation', '#workflow-archive-mobile'].forEach((id) => { const link = $(id); if (link && url) { link.href = url; link.referrerPolicy = 'origin'; link.hidden = false; } });
+  }
+  function renderArchiveHandoff(batch) {
+    const view = archiveHandoffView(batch); const card = make('section', 'lifecycle-card archive-handoff-card');
+    const heading = make('div', 'archive-handoff-heading'); heading.append(make('div', 'subheading', '后台转存反馈'));
+    heading.append(make('span', `status-tag archive-handoff-status archive-handoff-${view.displayStatus}`, view.displayLabel)); card.append(heading);
+    card.append(make('p', 'archive-handoff-note', view.note));
+    if (view.status !== 'unknown') {
+      const grid = make('div', 'lifecycle-grid archive-handoff-grid');
+      addField(grid, '已确认文件', formatCount(view.confirmed)); addField(grid, '总文件数', formatCount(view.total)); addField(grid, '缺失文件', formatCount(view.missing));
+      addField(grid, '来源处置', archiveDispositionLabels[view.raw.source_disposition] || '来源状态未知'); card.append(grid);
+      const checked = make('div', 'archive-handoff-times'); checked.append(make('span', '', `后台核对：${formatDate(view.raw.checked_at)}`), make('span', '', `资格到期：${formatDate(view.raw.expires_at)}`)); card.append(checked);
+      if (view.raw.reason) card.append(make('p', 'archive-handoff-message', `原因：${esc(view.raw.reason)}`));
+      const cardMessage = typeof view.raw.card_message === 'string' && view.raw.card_message.trim() ? view.raw.card_message : '后台未提供卡片说明，保留来源并等待核对。';
+      const cleanupMessage = typeof view.raw.cleanup_message === 'string' && view.raw.cleanup_message.trim() ? view.raw.cleanup_message : '后台未提供清理说明，不执行来源清理。';
+      card.append(make('p', 'archive-handoff-message', esc(cardMessage)), make('p', 'archive-handoff-message', esc(cleanupMessage)));
+      if (view.jobs.length) {
+        const jobs = make('div', 'archive-handoff-jobs'); jobs.append(make('strong', '', `关联归档任务（${view.jobs.length}）`));
+        const appendJob = (job) => { const row = make('li', 'archive-handoff-job'); const url = archiveWorkflowUrl(batchId(batch), job.job_id); const name = esc(job.project_name || '未命名项目'); row.append(make('span', 'archive-handoff-job-name', name)); if (url) { const link = make('a', 'archive-handoff-job-link', '查看归档任务'); link.href = url; link.target = '_blank'; link.rel = 'noopener'; link.referrerPolicy = 'origin'; link.title = `job_id: ${job.job_id}`; row.append(link); } else row.title = `job_id: ${job.job_id}`; return row; };
+        const list = make('ul', 'archive-handoff-job-list'); view.jobs.slice(0, 3).forEach((job) => list.append(appendJob(job))); jobs.append(list);
+        if (view.jobs.length > 3) { const more = document.createElement('details'); more.className = 'archive-handoff-more'; more.append(make('summary', '', `展开其余 ${view.jobs.length - 3} 个关联任务`)); const rest = make('ul', 'archive-handoff-job-list'); view.jobs.slice(3).forEach((job) => rest.append(appendJob(job))); more.append(rest); jobs.append(more); }
+        card.append(jobs);
+      }
+    } else {
+      card.append(make('p', 'archive-handoff-message', '后台未提供卡片说明，不能判断已转存。'), make('p', 'archive-handoff-message', '后台未提供清理说明，不执行来源清理。'));
+    }
+    return card;
+  }
   function renderBatchDetail() {
     const host = $('#batch-detail'); if (!host) return; const batch = getSelectedBatch(); host.replaceChildren(); if (!batch) { host.append(empty('↗', '选择一个批次', '查看进度、文件结果和留存操作。')); return; }
-    const head = make('div', 'detail-heading'); const title = make('div'); title.append(make('p', 'eyebrow', 'BATCH RECEIPT'), make('h2', '', batch.source_label || batch.source_id || '未命名来源')); const tag = make('span', `status-tag status-tag-large ${stateClass(batch.state)}`, stateLabel(batch.state)); head.append(title, tag); host.append(head);
+    const head = make('div', 'detail-heading'); const title = make('div'); title.append(make('p', 'eyebrow', 'BATCH RECEIPT'), make('h2', '', batch.source_label || batch.source_id || '未命名来源')); const tag = make('span', `status-tag status-tag-large ${stateClass(batch.state)}`, stateLabel(displayState(batch))); head.append(title, tag); host.append(head);
     const idLine = make('p', 'detail-id', `批次 ${batchId(batch)} · 创建于 ${formatDate(batch.created_at)}`); host.append(idLine);
+    const workflowUrl = archiveWorkflowUrl(batchId(batch));
+    if (workflowUrl) {
+      const workflow = make('div', 'lifecycle-card');
+      workflow.append(make('strong', '', '拷贝 → 校验交接 → 确认项目 → 归档'));
+      workflow.append(make('p', 'muted', sourceReleased(batch) ? `来源已释放，${sourceReleaseProgressNote(batch)}留存与归档条件仍按批次完成状态核验。` : String(batch.state).toUpperCase() === 'COMPLETED' ? '拷贝完成后，分类服务独立核对内容。校验通过即可确认项目并归档；原拷贝记录保留。' : '本批仍需完成拷贝和校验。可查看交接进度，归档不会自动提交。'));
+      const link = make('a', 'button button-secondary', '查看归档任务');
+      link.href = workflowUrl; link.referrerPolicy = 'origin'; workflow.append(link); host.append(workflow);
+    }
+    host.append(renderArchiveHandoff(batch));
+    if (sourceReleased(batch)) {
+      const release = make('section', 'lifecycle-card source-release-notice');
+      release.append(make('strong', '', '本来源已释放'));
+      release.append(make('p', '', `${sourceReleaseProgressNote(batch)}可继续接收下一来源。`));
+      release.append(make('p', 'muted', '本存储区无需继续连接；同一设备其他存储区也完成后可拔出。可拔出不等于可格式化；格式化仍以原有完整核验与转存确认为准。'));
+      if (batch.source_release.released_at) release.append(make('small', 'muted', `来源释放于 ${formatDate(batch.source_release.released_at)}`));
+      host.append(release);
+    }
     const identity = make('div', 'batch-source-identity'); identity.id = 'batch-source-identity'; host.append(identity); renderBatchIdentity();
     if (batch.error) { const error = make('div', 'inline-error'); error.append(make('strong', '', '服务端报告错误'), make('span', '', batch.error)); host.append(error); }
-    const progressCard = make('div', 'progress-card'); const progressTop = make('div', 'progress-card-top'); progressTop.append(make('strong', '', batch.progress?.relative_path || (isActive(batch) ? '正在等待服务端进度…' : '复制进度')), make('span', 'progress-value', `${progressPercent(batch)}%`)); const track = make('div', 'progress-track progress-track-large'); const bar = make('span', 'progress-bar'); bar.style.width = `${progressPercent(batch)}%`; track.append(bar); progressCard.append(progressTop, track); if (batch.progress?.stage) progressCard.append(make('small', 'muted', `${stateLabel(batch.progress.stage)} / ${batch.progress.stage}`)); const p = batch.progress || {}; const totalBytes = Number(p.total_bytes || batch.summary?.selected_bytes || 0); const processedBytes = Number(p.bytes || 0); const metrics = make('div', 'progress-metrics'); addField(metrics, '实时速度', formatSpeed(p.speed_bps)); addField(metrics, '平均速度', formatSpeed(p.average_speed_bps)); addField(metrics, '已处理', `${formatBytes(processedBytes)} / ${formatBytes(totalBytes)}`); addField(metrics, '预计剩余', p.eta_seconds == null ? (String(batch.state).toUpperCase() === 'COMPLETED' ? '已完成' : '测算中') : formatDuration(p.eta_seconds)); progressCard.append(metrics); host.append(progressCard);
+    const p = batch.progress || {}; const metadataStageName = metadataStage(batch); const metadataQueued = metadataStageName === 'METADATA_QUEUED';
+    const percentage = metadataStageName && p.metadata_total > 0 ? Math.max(0, Math.min(100, Math.round(p.metadata_done / p.metadata_total * 100))) : progressPercent(batch);
+    const progressCard = make('div', 'progress-card'); const progressTop = make('div', 'progress-card-top');
+    progressTop.append(make('strong', '', p.relative_path || (metadataQueued ? '等待后台读取拍摄信息' : metadataStageName ? '读取拍摄信息' : isActive(batch) ? '正在等待服务端进度…' : '复制进度')), make('span', 'progress-value', `${percentage}%`));
+    const track = make('div', 'progress-track progress-track-large'); const bar = make('span', 'progress-bar'); bar.style.width = `${percentage}%`; track.append(bar); progressCard.append(progressTop, track);
+    if (p.stage) progressCard.append(make('small', 'muted', stateLabel(p.stage)));
+    const metrics = make('div', 'progress-metrics');
+    if (metadataStageName) {
+      addField(metrics, '拷贝状态', '文件已拷贝完');
+      addField(metrics, '拍摄信息', `${formatCount(p.metadata_done)} / ${formatCount(p.metadata_total)} 个文件`);
+      if (metadataQueued) {
+        addField(metrics, '后台状态', '等待 NAS 处理');
+        progressCard.append(make('p', 'muted', '文件已拷贝并释放来源，拍摄信息将在 NAS 后台开始处理。'));
+      } else {
+        addField(metrics, '处理速度', p.metadata_files_per_second > 0 ? `${p.metadata_files_per_second} 个/秒` : '正在读取');
+        addField(metrics, '本阶段预计剩余', p.metadata_eta_seconds == null ? '开始后估算' : formatDuration(p.metadata_eta_seconds));
+        progressCard.append(make('p', 'muted', '正在读取拍摄时间与相机信息，随后完成来源核对并交给独立内容校验。'));
+      }
+    } else {
+      const totalBytes = Number(p.total_bytes || batch.summary?.selected_bytes || 0);
+      addField(metrics, '实时速度', formatSpeed(p.speed_bps)); addField(metrics, '平均速度', formatSpeed(p.average_speed_bps));
+      addField(metrics, '已处理', `${formatBytes(Number(p.bytes || 0))} / ${formatBytes(totalBytes)}`);
+      addField(metrics, '预计剩余', p.stage === 'FINAL_SOURCE_CHECK' ? '正在核对来源范围' : p.eta_seconds == null ? (String(batch.state).toUpperCase() === 'COMPLETED' ? '已完成' : '测算中') : formatDuration(p.eta_seconds));
+    }
+    progressCard.append(metrics); host.append(progressCard);
     const summary = make('div', 'summary-grid'); const s = batch.summary || {}; addField(summary, '选中文件', formatCount(s.selected_file_count)); addField(summary, '已复制', formatCount(s.copied_file_count)); addField(summary, '精准核验', formatCount(s.verified_file_count)); addField(summary, '大小核验', formatCount(s.size_verified_file_count)); addField(summary, '等待 Hash', formatCount(s.awaiting_hash_file_count)); addField(summary, '历史引用', formatCount(s.previously_ingested_count)); addField(summary, '失败', formatCount(s.failed_file_count)); addField(summary, '数据量', formatBytes(s.selected_bytes)); host.append(summary);
-    const lifecycle = make('div', 'lifecycle-card'); lifecycle.append(make('div', 'subheading', '留存状态')); const lifeGrid = make('div', 'lifecycle-grid'); addField(lifeGrid, '存储状态', stateLabel(batch.lifecycle?.storage_state)); addField(lifeGrid, '中转到期', formatDate(batch.lifecycle?.expires_at)); addField(lifeGrid, '转存确认', batch.lifecycle?.handoff_confirmed ? '人工已确认' : '未确认'); addField(lifeGrid, '保护锁', batch.lifecycle?.hold ? '已开启' : '未开启'); lifecycle.append(lifeGrid); if (batch.lifecycle?.blocked_reasons?.length) { const reasons = make('div', 'blocked-reasons'); reasons.append(make('strong', '', '当前阻塞原因')); batch.lifecycle.blocked_reasons.forEach((reason) => reasons.append(make('span', '', reason))); lifecycle.append(reasons); } host.append(lifecycle);
-    const actions = make('div', 'detail-actions'); if (['RUNNING', 'COPYING'].includes(String(batch.state || '').toUpperCase())) actions.append(actionButton('interrupt', '中断复制', 'button-quiet')); if (String(batch.state || '').toUpperCase() === 'INTERRUPTED') actions.append(actionButton('resume', '继续复制', 'button-secondary')); actions.append(actionButton('files', '查看文件结果', 'button-secondary')); actions.append(actionButton('retention', batch.lifecycle?.hold ? '延长 / 解除保护' : '延长留存', 'button-quiet')); if (!batch.lifecycle?.handoff_confirmed && ['ACTIVE', undefined].includes(batch.lifecycle?.storage_state)) actions.append(actionButton('handoff', '确认已转存', 'button-primary')); const manifest = make('div', 'manifest-links'); manifest.append(make('span', 'detail-label', '批次回执')); ['md', 'json'].forEach((format) => { const link = make('a', 'manifest-link', format.toUpperCase()); link.href = `${API}/batches/${encodeURIComponent(batchId(batch))}/manifest?format=${format}`; link.target = '_blank'; link.rel = 'noopener'; manifest.append(link); }); actions.append(manifest); host.append(actions);
+    const lifecycle = make('div', 'lifecycle-card'); lifecycle.append(make('div', 'subheading', '留存状态')); const lifeGrid = make('div', 'lifecycle-grid'); addField(lifeGrid, '存储状态', stateLabel(batch.lifecycle?.storage_state)); addField(lifeGrid, '中转到期', formatDate(batch.lifecycle?.expires_at)); const handoffEvidence = batch.lifecycle?.handoff_evidence; const handoffLabel = batch.lifecycle?.handoff_confirmed ? (handoffEvidence === 'archive_receipt' ? (archiveHandoffView(batch).qualified ? '后台已确认' : '需要重新核对') : handoffEvidence === 'manual_confirmation' ? '人工已确认' : '已确认') : '未确认'; addField(lifeGrid, '转存确认', handoffLabel); addField(lifeGrid, '保护锁', batch.lifecycle?.hold ? '已开启' : '未开启'); lifecycle.append(lifeGrid); if (batch.lifecycle?.blocked_reasons?.length) { const reasons = make('div', 'blocked-reasons'); reasons.append(make('strong', '', '当前阻塞原因')); batch.lifecycle.blocked_reasons.forEach((reason) => reasons.append(make('span', '', reason))); lifecycle.append(reasons); } host.append(lifecycle);
+    const batchState = String(batch.state || '').toUpperCase(); const releasedMetadata = sourceReleased(batch) && Boolean(metadataStageName); const actions = make('div', 'detail-actions'); if (['RUNNING', 'COPYING'].includes(batchState) || releasedMetadata && isActive(batch)) actions.append(actionButton('interrupt', releasedMetadata ? '中断后台处理' : '中断复制', 'button-quiet')); if (['INTERRUPTED', 'FAILED'].includes(batchState)) actions.append(actionButton('resume', releasedFailure(batch) ? '继续后台处理' : '继续复制', 'button-secondary')); actions.append(actionButton('files', '查看文件结果', 'button-secondary')); actions.append(actionButton('retention', batch.lifecycle?.hold ? '延长 / 解除保护' : '延长留存', 'button-quiet')); if (!batch.lifecycle?.handoff_confirmed && ['ACTIVE', undefined].includes(batch.lifecycle?.storage_state)) actions.append(actionButton('handoff', '确认已转存', 'button-primary')); const manifest = make('div', 'manifest-links'); manifest.append(make('span', 'detail-label', '批次回执')); ['md', 'json'].forEach((format) => { const link = make('a', 'manifest-link', format.toUpperCase()); link.href = `${API}/batches/${encodeURIComponent(batchId(batch))}/manifest?format=${format}`; link.target = '_blank'; link.rel = 'noopener'; manifest.append(link); }); actions.append(manifest); host.append(actions);
     const files = state.files[batchId(batch)]; if (files) host.append(renderFiles(files));
   }
   function actionButton(action, label, style) { const button = make('button', `button ${style}`, label); button.type = 'button'; button.dataset.action = action; button.addEventListener('click', () => handleBatchAction(action)); return button; }
   function renderFiles(payload) { const files = Array.isArray(payload) ? payload : payload.files || []; const section = make('div', 'files-section'); const top = make('div', 'panel-heading'); top.append(make('h3', '', '文件结果'), make('span', 'muted', `${files.length} 项`)); section.append(top); if (!files.length) { section.append(make('p', 'muted', '服务端没有返回文件结果。')); return section; } const table = make('div', 'file-table'); table.setAttribute('role', 'table'); table.setAttribute('aria-label', '批次文件结果'); const head = make('div', 'file-row file-header'); head.setAttribute('role', 'row'); head.append(make('span', '', '相对路径'), make('span', '', '状态'), make('span', '', '大小')); Array.from(head.children).forEach((cell) => cell.setAttribute('role', 'columnheader')); table.append(head); files.slice(0, 500).forEach((file) => { const row = make('div', 'file-row'); row.setAttribute('role', 'row'); row.append(make('span', 'file-name', file.relative_path || '—'), make('span', `file-status ${stateClass(file.copy_status)}`, stateLabel(file.copy_status)), make('span', '', formatBytes(file.size_bytes))); Array.from(row.children).forEach((cell) => cell.setAttribute('role', 'cell')); if (file.error) { const errorText = file.error.message || file.error.type || '文件错误'; const error = make('span', 'file-error', errorText); error.setAttribute('role', 'cell'); row.append(error); } table.append(row); }); section.append(table); if (files.length > 500) section.append(make('small', 'muted', `仅显示前 500 项，共 ${files.length} 项。`)); return section; }
 
-  async function handleBatchAction(action) { const batch = getSelectedBatch(); if (!batch) return; const id = encodeURIComponent(batchId(batch)); if (action === 'files') { try { const result = await request(`/batches/${id}/files`); state.files[batchId(batch)] = result; renderBatchDetail(); } catch (error) { notify(error.message, 'error'); } return; } if (action === 'interrupt' || action === 'resume') { const verb = action === 'interrupt' ? '中断' : '继续'; openConfirm({ eyebrow: '批次操作', title: `${verb}这个批次？`, body: action === 'resume' ? `请先重新连接同一张存储卡并刷新来源。已完成文件会跳过，断开时正在复制的文件会从头安全重拷，其余文件继续。批次 ${batchId(batch)} 完成前仍会重新终检。` : `将对批次 ${batchId(batch)} 发送“中断”请求。`, confirmLabel: `确认${verb}`, onConfirm: async () => { await request(`/batches/${id}/${action}`, { method: 'POST', body: JSON.stringify({}) }); notify(`已发送${verb}请求。`, 'success'); await loadBatches(); } }); return; } if (action === 'handoff') { openConfirm({ eyebrow: '转存凭据', title: '确认你已另行保存这批素材？', body: '这会记录一条人工确认：我已将本批全部素材（含历史引用）另行保存。人工确认不等同于逐文件 hash 验证。', requiresAck: '我已将本批全部素材（含历史引用）另行保存', confirmLabel: '记录转存确认', onConfirm: async () => { await request(`/batches/${id}/handoffs`, { method: 'POST', body: JSON.stringify({ confirmed: true }) }); notify('已记录人工转存确认。', 'success'); await loadBatches(); } }); return; } if (action === 'retention') openRetentionModal(batch); }
+  async function handleBatchAction(action) { const batch = getSelectedBatch(); if (!batch) return; const id = encodeURIComponent(batchId(batch)); if (action === 'files') { try { const result = await request(`/batches/${id}/files`); state.files[batchId(batch)] = result; renderBatchDetail(); } catch (error) { notify(error.message, 'error'); } return; } if (action === 'interrupt' || action === 'resume') { const releasedMetadata = sourceReleased(batch) && Boolean(metadataStage(batch)); const releasedResume = releasedFailure(batch); const verb = action === 'interrupt' ? (releasedMetadata ? '中断后台处理' : '中断') : (releasedResume ? '继续后台处理' : '继续'); const body = action === 'resume' ? releasedResume ? `来源已释放。本次只会在 NAS 后台继续处理拍摄信息，不会重新连接或复制来源文件；批次 ${batchId(batch)} 完成前仍会继续按原有条件核验。` : `请先重新连接同一张存储卡并刷新来源。已完成文件会跳过，断开时正在复制的文件会从头安全重拷，其余文件继续。批次 ${batchId(batch)} 完成前仍会重新终检。` : releasedMetadata ? `将对批次 ${batchId(batch)} 发送“中断后台处理”请求；来源已释放，不会影响已完成的来源复制。` : `将对批次 ${batchId(batch)} 发送“中断”请求。`; openConfirm({ eyebrow: '批次操作', title: `${verb}这个批次？`, body, confirmLabel: `确认${verb}`, onConfirm: async () => { await request(`/batches/${id}/${action}`, { method: 'POST', body: JSON.stringify({}) }); notify(`已发送${verb}请求。`, 'success'); await loadBatches(); } }); return; } if (action === 'handoff') { openConfirm({ eyebrow: '转存凭据', title: '确认你已另行保存这批素材？', body: '这会记录一条人工确认：我已将本批全部素材（含历史引用）另行保存。人工确认不等同于逐文件 hash 验证。', requiresAck: '我已将本批全部素材（含历史引用）另行保存', confirmLabel: '记录转存确认', onConfirm: async () => { await request(`/batches/${id}/handoffs`, { method: 'POST', body: JSON.stringify({ confirmed: true }) }); notify('已记录人工转存确认。', 'success'); await loadBatches(); } }); return; } if (action === 'retention') openRetentionModal(batch); }
   function openRetentionModal(batch) { const body = make('div', 'form-stack'); body.append(make('p', '', '填写批次完成后的总留存天数，只能延长，不能缩短。也可永久保留或设置保护锁。')); const label = make('label', 'field-label', '完成后的总留存天数（只能延长）'); const input = document.createElement('input'); input.className = 'field-control'; input.type = 'number'; input.min = '1'; input.max = '3650'; input.placeholder = '例如 30'; label.append(input); const permanentLabel = make('label', 'check-option'); const permanent = document.createElement('input'); permanent.type = 'checkbox'; permanentLabel.append(permanent, make('span', '', '永久保留（不设置到期日期）')); const holdLabel = make('label', 'check-option'); const hold = document.createElement('input'); hold.type = 'checkbox'; hold.checked = Boolean(batch.lifecycle?.hold); holdLabel.append(hold, make('span', '', '启用批次保护锁（不按到期自动清理）')); permanent.addEventListener('change', () => { input.disabled = permanent.checked; if (permanent.checked) input.value = ''; }); body.append(label, permanentLabel, holdLabel); openConfirm({ eyebrow: '留存策略', title: '更新批次保护', body, confirmLabel: '保存留存设置', onConfirm: async () => { const value = input.value.trim(); const payload = { hold: hold.checked }; if (permanent.checked) payload.retention_days = null; else if (value) payload.retention_days = Number(value); await request(`/batches/${encodeURIComponent(batchId(batch))}/retention`, { method: 'PATCH', body: JSON.stringify(payload) }); notify('批次留存设置已更新。', 'success'); await loadBatches(); } }); }
 
   async function loadStatus() { state.statusLoading = true; renderStorageLocation(); try { state.status = await request('/status'); state.errors.status = null; } catch (error) { state.status = null; state.errors.status = error.message; notify(`本地服务连接失败：${error.message}`, 'error'); } finally { state.statusLoading = false; renderStatus(); } }
   async function loadSources({ quiet = false } = {}) { try { const result = await request('/sources'); state.sources = result.sources || []; state.loaded.sources = true; state.errors.sources = null; renderSources(); renderOverview(); renderBatchIdentity(); } catch (error) { state.sources = []; state.loaded.sources = false; state.errors.sources = error.message; renderSources(); renderOverview(); renderBatchIdentity(); if (!quiet) notify(`来源读取失败：${error.message}`, 'error'); } }
-  async function loadBatches({ quiet = false } = {}) { try { const result = await request('/batches'); const incoming = result.batches || []; const changed = !state.loaded.batches || json(incoming) !== json(state.batches); state.loaded.batches = true; state.errors.batches = null; if (!changed) return; state.batches = incoming; if (state.selectedBatchId && !incoming.some((batch) => batchId(batch) === state.selectedBatchId)) state.selectedBatchId = null; renderOverview(); renderBatches(); } catch (error) { state.errors.batches = error.message; if (!state.loaded.batches) { renderOverview(); renderBatches(); } if (!quiet) notify(`批次读取失败：${error.message}`, 'error'); } }
+  async function loadBatches({ quiet = false } = {}) { try { const result = await request('/batches'); const incoming = result.batches || []; const changed = !state.loaded.batches || json(incoming) !== json(state.batches); state.loaded.batches = true; state.errors.batches = null; if (!changed) return; state.batches = incoming; if (state.selectedBatchId && !incoming.some((batch) => batchId(batch) === state.selectedBatchId)) state.selectedBatchId = null; renderOverview(); renderBatches(); locateWorkflowBatch(); } catch (error) { state.errors.batches = error.message; if (!state.loaded.batches) { renderOverview(); renderBatches(); } if (!quiet) notify(`批次读取失败：${error.message}`, 'error'); } }
   async function refreshAll() { if (!state.appReady) return; await Promise.allSettled([loadStatus(), loadSources(), loadBatches({ quiet: true })]); if (state.appReady && state.page === 'retention') await loadRetention(); }
 
   async function loadRetention() { try { const result = await request('/retention/overview'); state.retention = result; renderRetention(); } catch (error) { if (state.page === 'retention') notify(`留存状态读取失败：${error.message}`, 'error'); } }
@@ -509,7 +725,7 @@
     $$('[data-page]').forEach((button) => button.addEventListener('click', () => go(button.dataset.page)));
     $$('[data-go-page]').forEach((button) => button.addEventListener('click', () => go(button.dataset.goPage)));
     $('#mobile-menu')?.addEventListener('click', () => { const nav = $('#mobile-nav'); const open = nav.classList.toggle('is-open'); $('#mobile-menu').setAttribute('aria-expanded', String(open)); });
-    $('#refresh-button')?.addEventListener('click', refreshAll); $('#sources-refresh')?.addEventListener('click', () => Promise.allSettled([loadSources(), loadStatus()])); $('#batches-refresh')?.addEventListener('click', () => loadBatches()); $('#retention-refresh')?.addEventListener('click', loadRetention); $('#settings-refresh')?.addEventListener('click', () => Promise.allSettled([loadSettings(), loadStatus()]));
+    $('#refresh-button')?.addEventListener('click', refreshAll); $('#sources-refresh')?.addEventListener('click', () => Promise.allSettled([loadSources(), loadStatus()])); $('#bulk-select-all')?.addEventListener('change', (event) => setBulkSelection(event.target.checked ? connectedBulkSources().map(sourceId) : [])); $('#bulk-scan-button')?.addEventListener('click', scanBulkSources); $('#bulk-start-button')?.addEventListener('click', confirmBulkStart); $('#batches-refresh')?.addEventListener('click', () => loadBatches()); $('#retention-refresh')?.addEventListener('click', loadRetention); $('#settings-refresh')?.addEventListener('click', () => Promise.allSettled([loadSettings(), loadStatus()]));
     $('#copy-staging-path')?.addEventListener('click', copyStagingPath);
     $('#scan-source')?.addEventListener('change', (event) => { state.scan = { sourceId: event.target.value, scanId: '', revision: null, roots: ['.'], requestedRoots: ['.'], directories: [], files: [], complete: false }; renderScanIdentity(); renderScanSummary(); renderDirectoryPicker(); updateScanControls(); }); $('#scan-button')?.addEventListener('click', scanSource); $('#start-batch-button')?.addEventListener('click', startBatch); $('#cleanup-preview-button')?.addEventListener('click', cleanupPreview); $('#cleanup-execute-button')?.addEventListener('click', executeCleanup); $('#settings-form')?.addEventListener('submit', (event) => { event.preventDefault(); saveSettings(); });
     $('#action-modal')?.addEventListener('keydown', (event) => {

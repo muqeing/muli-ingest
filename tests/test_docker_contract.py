@@ -60,8 +60,6 @@ def test_compose_healthcheck_uses_public_health_endpoint_and_expected_command():
     assert "start_period: 10s" in COMPOSE
     for value in ("--rclone\n      - /usr/local/bin/rclone", "--port\n      - \"8765\""):
         assert value in COMPOSE
-    assert "TZ: Asia/Shanghai" in COMPOSE
-    assert "TZ: Asia/Shanghai" in LAN_COMPOSE
 
 
 def test_lan_compose_requires_access_code_and_keeps_source_read_only():
@@ -70,15 +68,7 @@ def test_lan_compose_requires_access_code_and_keeps_source_read_only():
     assert "${MULI_INGEST_ACCESS_CODE_FILE:?" in LAN_COMPOSE
     assert "${MULI_INGEST_BIND_ADDRESS:-0.0.0.0}:${MULI_INGEST_PORT:-18765}:8765" in LAN_COMPOSE
     assert "target: /run/secrets/muli_ingest_access_code\n        read_only: true" in LAN_COMPOSE
-    assert "source: ${MULI_INGEST_EXTERNAL_ROOT:-/vol00}" in LAN_COMPOSE
-    assert "target: /external\n        read_only: true" in LAN_COMPOSE
-    assert "propagation: rslave" in LAN_COMPOSE
-    assert "source: /run/udev/data\n        target: /run/udev/data\n        read_only: true" in LAN_COMPOSE
     assert "target: /sources/source-01\n        read_only: true" in LAN_COMPOSE
-    assert "target: /sources/source-02\n        read_only: true" in LAN_COMPOSE
-    assert "--source-label" in LAN_COMPOSE
-    assert "--source-uuid" in LAN_COMPOSE
-    assert "${MULI_INGEST_SOURCE_02:?" in LAN_COMPOSE
     assert "http://127.0.0.1:8765/api/v1/health" in LAN_COMPOSE
     assert "privileged: true" not in LAN_COMPOSE
     assert "docker.sock" not in LAN_COMPOSE

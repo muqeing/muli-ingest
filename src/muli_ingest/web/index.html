@@ -11,6 +11,7 @@
 </head>
 <body>
   <section class="access-connection" id="access-connection" aria-labelledby="access-connection-title" aria-busy="true">
+<div class="access-help"><a class="system-help-link" href="/static/help/index.html" target="_blank" rel="noopener" aria-label="使用帮助（新标签页）"><span aria-hidden="true">?</span><span class="system-help-label">使用帮助</span></a></div>
     <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
     <p class="eyebrow">MULI / INGEST</p>
     <h1 id="access-connection-title">正在连接接收台</h1>
@@ -19,6 +20,7 @@
     <noscript><p>请启用浏览器的 JavaScript 后重新打开页面。</p></noscript>
   </section>
   <main class="access-screen" id="access-gate" aria-labelledby="access-title" hidden>
+<div class="access-help"><a class="system-help-link" href="/static/help/index.html" target="_blank" rel="noopener" aria-label="使用帮助（新标签页）"><span aria-hidden="true">?</span><span class="system-help-label">使用帮助</span></a></div>
     <div class="access-layout">
       <section class="access-intro" aria-label="木梨素材接收台">
         <div class="brand-lockup"><span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span><span><strong>木梨<span class="brand-latin">MULI</span></strong><small>INGEST SYSTEM</small></span></div>
@@ -56,6 +58,7 @@
         <button class="nav-item" data-page="batches" type="button"><span class="nav-icon" aria-hidden="true">03</span><span>批次记录</span><span class="nav-count" id="active-count" hidden>0</span></button>
         <button class="nav-item" data-page="retention" type="button"><span class="nav-icon" aria-hidden="true">04</span><span>留存与回收站</span></button>
         <button class="nav-item" data-page="settings" type="button"><span class="nav-icon" aria-hidden="true">05</span><span>系统设置</span></button>
+        <a id="workflow-archive-navigation" class="nav-item" hidden><span class="nav-icon" aria-hidden="true">↗</span><span>素材归档工作台</span></a>
       </nav>
       <div class="rail-note"><span class="rail-note-line"></span><p>每次接收，<br>都留下完整的依据。</p><small>SCAN / COPY / VERIFY</small></div>
       <div class="sidebar-foot"><span class="connection-dot" id="connection-dot" aria-hidden="true"></span><div><span id="connection-label">检查本地服务</span><small id="connection-version">等待响应</small></div><span class="local-chip">LOCAL</span></div>
@@ -65,9 +68,9 @@
       <header class="topbar">
         <button class="mobile-menu" id="mobile-menu" type="button" aria-label="打开导航" aria-controls="mobile-nav" aria-expanded="false"><span aria-hidden="true">☰</span></button>
         <div class="breadcrumb"><span class="console-code">M / INGEST</span><b aria-hidden="true">/</b><strong id="page-title">接收总览</strong></div>
-        <div class="top-actions"><span class="topbar-label">素材接收工作站</span><span class="status-pill" id="mode-pill"><i aria-hidden="true"></i>连接检查中</span><button class="icon-button" id="refresh-button" type="button" aria-label="刷新数据" title="刷新数据"><span aria-hidden="true">↻</span></button><button class="access-logout" id="access-logout" type="button" hidden>退出访问</button></div>
+        <div class="top-actions"><a class="system-help-link" href="/static/help/index.html" target="_blank" rel="noopener" aria-label="使用帮助（新标签页）"><span aria-hidden="true">?</span><span class="system-help-label">使用帮助</span></a><span class="topbar-label">素材接收工作站</span><span class="status-pill" id="mode-pill"><i aria-hidden="true"></i>连接检查中</span><button class="icon-button" id="refresh-button" type="button" aria-label="刷新数据" title="刷新数据"><span aria-hidden="true">↻</span></button><button class="access-logout" id="access-logout" type="button" hidden>退出访问</button></div>
       </header>
-      <nav class="mobile-nav" id="mobile-nav" aria-label="移动端导航"><button data-page="overview" type="button" aria-current="page">总览</button><button data-page="sources" type="button">来源</button><button data-page="batches" type="button">批次</button><button data-page="retention" type="button">留存</button><button data-page="settings" type="button">设置</button></nav>
+      <nav class="mobile-nav" id="mobile-nav" aria-label="移动端导航"><button data-page="overview" type="button" aria-current="page">总览</button><button data-page="sources" type="button">来源</button><button data-page="batches" type="button">批次</button><button data-page="retention" type="button">留存</button><button data-page="settings" type="button">设置</button><a id="workflow-archive-mobile" hidden>素材归档 ↗</a></nav>
 
       <main class="main-content" id="main-content" tabindex="-1">
         <div class="toast-stack" id="toast-stack" aria-live="polite" aria-atomic="true"></div>
@@ -105,6 +108,21 @@
         <section class="page" id="page-sources" data-page-view="sources" aria-labelledby="sources-title" hidden>
           <div class="page-intro"><div><p class="eyebrow">SOURCE MEDIA / 02</p><h1 id="sources-title">来源设备<span class="title-period">.</span></h1><p class="lede">确认介质身份与扫描范围，再开始接收。</p></div><button class="button button-quiet" id="sources-refresh" type="button">↻ 刷新来源</button></div>
           <div class="workflow-steps" aria-label="接收步骤"><span><b>01</b>选择来源</span><i aria-hidden="true">→</i><span><b>02</b>扫描并确认范围</span><i aria-hidden="true">→</i><span><b>03</b>手动开始复制</span></div>
+          <article class="bulk-ingest panel" id="bulk-ingest-panel" aria-labelledby="bulk-ingest-title">
+            <div class="bulk-ingest-heading">
+              <div><p class="eyebrow">MULTI SOURCE / BATCH INTAKE</p><h2 id="bulk-ingest-title">批量接收</h2><p>选择当前连接的多张卡，全部完成全卷扫描后，再统一开始复制。</p></div>
+              <span class="step-badge">BATCH</span>
+            </div>
+            <div class="bulk-ingest-toolbar">
+              <label class="bulk-select-all" for="bulk-select-all"><input id="bulk-select-all" type="checkbox"><span><strong>全选当前连接设备</strong><small id="bulk-selection-count">已选择 0 个</small></span></label>
+              <button class="button button-secondary" id="bulk-scan-button" type="button" disabled>扫描所选设备</button>
+            </div>
+            <div class="bulk-scan-results" id="bulk-scan-results" role="status" aria-live="polite" hidden></div>
+            <div class="bulk-ingest-footer">
+              <p id="bulk-ingest-note">扫描不会开始复制。每张卡会保留独立批次、进度、续拷状态和最终回执。</p>
+              <button class="button button-primary" id="bulk-start-button" type="button" disabled>全部开始复制</button>
+            </div>
+          </article>
           <div class="source-layout"><div><div class="list-heading"><span>已配置的来源</span><small>READ ONLY SOURCE</small></div><div class="source-list" id="source-list"><div class="loading-state" role="status"><span></span><span></span><p>正在读取来源</p></div></div><p class="source-context">连接状态来自本机服务。来源路径与身份由系统配置，扫描不会移动或删除原始文件。</p></div><aside class="scan-panel panel" id="scan-panel"><div class="panel-heading"><div><p class="eyebrow">SCOPE SELECTOR</p><h2>扫描范围</h2></div><span class="step-badge">MANUAL</span></div><p class="panel-help">先全卷扫描，再按文件夹收窄范围。扫描本身不会开始复制。</p><label class="field-label" for="scan-source">来源设备</label><select class="field-control" id="scan-source"><option value="">请先选择来源</option></select><div id="scan-source-identity" class="scan-source-identity" aria-live="polite" aria-atomic="true" hidden></div><button class="button button-secondary full-width" id="scan-button" type="button">开始扫描</button><div id="scan-summary" class="scan-summary" role="status" hidden></div><div id="directory-picker" class="directory-picker" hidden><div class="picker-heading"><strong>选择要转运的文件夹</strong><span id="directory-count">0 项</span></div><div id="directory-tree" class="directory-tree"></div><p class="field-hint">变更范围后，请点击上方扫描按钮重新扫描，再开始复制。</p><button class="button button-primary full-width" id="start-batch-button" type="button" disabled>确认范围并开始</button></div></aside></div>
         </section>
 
@@ -130,6 +148,7 @@
   </div>
 
   <dialog class="modal" id="action-modal" aria-labelledby="modal-title" aria-describedby="modal-body"><div class="modal-inner"><div class="modal-heading"><div><p class="eyebrow" id="modal-eyebrow">需要确认</p><h2 id="modal-title">确认操作</h2></div><button class="icon-button modal-close" id="modal-close" type="button" aria-label="关闭对话框">×</button></div><div class="modal-body" id="modal-body"></div><div class="modal-actions" id="modal-actions"><button class="button button-quiet" id="modal-cancel" type="button">取消</button><button class="button button-primary" id="modal-confirm" type="button">确认</button></div></div></dialog>
+  <script src="/static/workflow-links.js" defer></script>
   <script src="/static/app.js" defer></script>
 </body>
 </html>

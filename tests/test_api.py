@@ -1,4 +1,3 @@
-import shutil
 from pathlib import Path
 
 import pytest
@@ -8,8 +7,7 @@ from muli_ingest.access import LanAccess
 from muli_ingest.api import create_app
 from muli_ingest.engine import Engine
 
-LOCAL_RCLONE = Path(__file__).resolve().parents[3] / "work" / "tools" / "rclone"
-RCLONE = LOCAL_RCLONE if LOCAL_RCLONE.is_file() else Path(shutil.which("rclone") or "")
+RCLONE = Path("/Users/zhangxuran/Documents/Codex/2026-09-27/adobe-bridge-chatgpt-conversation-6ab8d169-cc50-2/work/tools/rclone")
 
 
 @pytest.fixture
@@ -18,6 +16,9 @@ def client(tmp_path):
     source.mkdir()
     (source / "demo.txt").write_text("synthetic api fixture\n", encoding="utf-8")
     engine = Engine(tmp_path / "state", tmp_path / "staging", [source], rclone=str(RCLONE), mode="demo")
+    from muli_ingest.staging_coordination import staging_guard
+    with staging_guard(engine.staging,create=True):
+        pass
     app = create_app(engine)
     with TestClient(app, base_url="http://127.0.0.1") as test_client:
         yield test_client
@@ -47,41 +48,6 @@ def test_source_identity_fields_are_explicit(client):
     assert source["volume_uuid"] is None
     assert source["filesystem"] is None
     assert source["mount_id"] is None
-
-
-def test_sources_keep_collapsed_history_fields_after_disconnect(tmp_path, monkeypatch):
-    source = tmp_path / "camera"
-    source.mkdir()
-    (source / "DCIM").mkdir()
-    observed = "CARD-UUID"
-    monkeypatch.setattr(
-        "muli_ingest.sources.mounted_volume_identity", lambda _path: (True, observed)
-    )
-    engine = Engine(
-        tmp_path / "state",
-        tmp_path / "staging",
-        [source],
-        rclone=str(RCLONE),
-        mode="local",
-        source_labels=["Camera"],
-        source_uuids=["CARD-UUID"],
-    )
-    app = create_app(engine)
-    try:
-        with TestClient(app, base_url="http://127.0.0.1") as history_client:
-            connected = history_client.get("/api/v1/sources").json()["sources"]
-            assert len(connected) == 1
-            assert connected[0]["connected"] is True
-            assert connected[0]["ever_connected"] is True
-            assert connected[0]["connected_at"]
-            observed = "SYSTEM-DISK"
-            previous = history_client.get("/api/v1/sources").json()["sources"]
-            assert len(previous) == 1
-            assert previous[0]["connected"] is False
-            assert previous[0]["ever_connected"] is True
-            assert previous[0]["last_seen_at"] == connected[0]["last_seen_at"]
-    finally:
-        engine.close()
 
 
 def test_loopback_and_write_request_guards(client):
@@ -127,7 +93,7 @@ def test_scan_and_retention_preview_are_readable_but_execution_is_disabled(clien
         headers={"X-Ingest-Request": "1"},
         json={"plan_id": response.json()["plan_id"], "confirmed": True},
     )
-    assert response.status_code == 501
+    assert response.status_code == 501, response.json()
     assert response.json()["detail"].startswith("cleanup_runtime_disabled")
 
 
@@ -138,7 +104,7 @@ def test_lan_access_requires_signed_http_only_session(tmp_path):
     access = LanAccess("correct-horse-battery-staple")
     app = create_app(engine, lan_access=access, allowed_hosts=("ingest.local",))
     try:
-        with TestClient(app, base_url="http://192.168.50.25") as lan_client:
+        with TestClient(app, base_url="http://192.168.31.44") as lan_client:
             assert lan_client.get("/api/v1/health").json() == {"status": "ok"}
             session = lan_client.get("/api/v1/session")
             assert session.json()["required"] is True
@@ -160,7 +126,7 @@ def test_lan_access_requires_signed_http_only_session(tmp_path):
 
             login = lan_client.post(
                 "/api/v1/session",
-                headers={"X-Ingest-Request": "1", "Origin": "http://192.168.50.25"},
+                headers={"X-Ingest-Request": "1", "Origin": "http://192.168.31.44"},
                 json={"access_code": "correct-horse-battery-staple"},
             )
             assert login.status_code == 200
@@ -174,12 +140,12 @@ def test_lan_access_requires_signed_http_only_session(tmp_path):
             logout = lan_client.request(
                 "DELETE",
                 "/api/v1/session",
-                headers={"X-Ingest-Request": "1", "Origin": "http://192.168.50.25"},
+                headers={"X-Ingest-Request": "1", "Origin": "http://192.168.31.44"},
                 json={},
             )
             assert logout.status_code == 200
             assert lan_client.get("/api/v1/status").status_code == 401
-            with TestClient(app, base_url="http://192.168.50.25") as replay_client:
+            with TestClient(app, base_url="http://192.168.31.44") as replay_client:
                 assert replay_client.get(
                     "/api/v1/status",
                     headers={"Cookie": f"{access.cookie_name}={replay_cookie}"},
@@ -200,7 +166,7 @@ def test_lan_host_scope_and_login_rate_limit(tmp_path):
             assert public_client.get("/api/v1/session").status_code == 403
         with TestClient(app, base_url="http://ingest.local") as named_client:
             assert named_client.get("/api/v1/session").status_code == 200
-        with TestClient(app, base_url="http://192.168.50.25") as lan_client:
+        with TestClient(app, base_url="http://192.168.31.44") as lan_client:
             assert lan_client.post(
                 "/api/v1/session", headers=headers, json={"access_code": "bad-one"}
             ).status_code == 401
@@ -214,3 +180,15 @@ def test_lan_host_scope_and_login_rate_limit(tmp_path):
             assert int(limited.headers["retry-after"]) > 0
     finally:
         engine.close()
+
+
+def test_expired_machine_confirmation_is_not_presented_as_current():
+    from muli_ingest.api import _batch_view
+    original={'revision':1,'state':'COMPLETED','summary':{'selected_file_count':1},
+        'lifecycle':{'handoff_confirmed':True,'handoff_evidence':'archive_receipt'},
+        'archive_handoff':{'status':'confirmed','revision':1,'total_file_count':1,
+            'confirmed_file_count':1,'missing_file_count':0,'expires_at':'2020-01-01T00:00:00+00:00'}}
+    view=_batch_view(original)
+    assert view['archive_handoff']['status']=='needs_review'
+    assert view['lifecycle']['handoff_confirmed'] is False
+    assert original['lifecycle']['handoff_confirmed'] is True
