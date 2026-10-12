@@ -18,8 +18,16 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Install rclone
-        run: sudo apt-get update && sudo apt-get install --yes rclone
+      - name: Use the same rclone release as the application image
+        run: |
+          cli_rclone_version="$(sed -n 's/^ARG RCLONE_VERSION=//p' Dockerfile)"
+          test -n "$cli_rclone_version"
+          docker create --name muli-cli-rclone "rclone/rclone:$cli_rclone_version"
+          docker cp muli-cli-rclone:/usr/local/bin/rclone "$RUNNER_TEMP/rclone"
+          docker rm muli-cli-rclone
+          chmod +x "$RUNNER_TEMP/rclone"
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/rclone" version
       - run: uv sync --locked --all-extras
       - run: uv run ruff check src/muli_ingest/remote_cli.py tests/test_remote_cli.py
       - run: uv run pytest
