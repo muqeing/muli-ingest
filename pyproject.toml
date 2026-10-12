@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "muli-ingest"
-version = "0.1.0"
+version = "0.1.1"
 description = "Local-first, verifiable camera media ingest for NAS workflows"
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -32,6 +32,7 @@ dev = ["pytest>=8,<10", "httpx>=0.28,<1", "ruff>=0.11,<1", "build>=1,<2", "playw
 
 [project.scripts]
 muli-ingest = "muli_ingest.cli:main"
+muli-ingest-client = "muli_ingest.remote_cli:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

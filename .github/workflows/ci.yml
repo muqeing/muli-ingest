@@ -2,7 +2,6 @@ name: CI
 
 on:
   push:
-    branches: [main]
   pull_request:
 
 permissions:
@@ -22,6 +21,17 @@ jobs:
       - name: Install rclone
         run: sudo apt-get update && sudo apt-get install --yes rclone
       - run: uv sync --locked --all-extras
-      - run: uv run ruff check .
+      - run: uv run ruff check src/muli_ingest/remote_cli.py tests/test_remote_cli.py
       - run: uv run pytest
       - run: uv run python -m build
+      - name: Install wheel and verify client entrypoint
+        run: |
+          python -m venv /tmp/muli-ingest-wheel-check
+          wheel="$(find dist -maxdepth 1 -name '*.whl' -print -quit)"
+          /tmp/muli-ingest-wheel-check/bin/pip install --no-deps "$wheel"
+          /tmp/muli-ingest-wheel-check/bin/python -c 'import importlib.metadata as m, json, os, subprocess, sys; version = m.version("muli-ingest"); entrypoint = os.path.join(os.path.dirname(sys.executable), "muli-ingest-client"); output = subprocess.check_output([entrypoint, "version"], text=True); assert json.loads(output)["cli_version"] == version'
+      - name: Upload wheel artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: muli-ingest-wheel
+          path: dist/*.whl

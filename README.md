@@ -2,7 +2,7 @@
 
 木梨 Ingest 是一套面向摄影与视频工作流的 NAS 素材安全中转服务。相机、存储卡或移动介质由宿主机只读挂载，服务扫描素材、执行受控复制、记录进度，并生成可回读的核验结果。
 
-> 当前版本为 **0.1.0 Alpha**。它已经可以运行和完成素材中转，但仍需要操作者保留源卡，并在另一份独立备份完成前避免格式化介质。
+> 当前版本为 **0.1.1 Alpha**。它已经可以运行和完成素材中转，但仍需要操作者保留源卡，并在另一份独立备份完成前避免格式化介质。
 
 ## 功能
 
@@ -66,6 +66,10 @@ uv run muli-ingest --demo --state ./runtime/demo-state --staging ./runtime/demo-
 ```
 
 打开 `http://127.0.0.1:8765/`。演示模式只创建少量合成文本文件，不代表真实相机、NAS、断电或大容量素材验收。
+
+### AI/API 客户端
+
+安装本项目后可使用 `muli-ingest-client` 读取本地 API。所有输出都是 `schema_version=1` 的 JSON 信封；`scan`、`start`、`interrupt` 和 `resume` 默认只打印拟发送的 method/path/body，执行写操作时必须显式添加 `--execute`。完整命令、严格 JSON 输入和等待状态说明见 [客户端 CLI](docs/cli.md)。
 
 ## 安全边界
 
