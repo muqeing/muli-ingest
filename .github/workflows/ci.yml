@@ -29,8 +29,9 @@ jobs:
           echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
           "$RUNNER_TEMP/rclone" version
       - run: uv sync --locked --all-extras
-      - run: uv run ruff check src/muli_ingest/remote_cli.py tests/test_remote_cli.py
+      - run: uv run ruff check src/muli_ingest/remote_cli.py tests/test_remote_cli.py src/muli_ingest/metadata_scheduler.py tests/test_metadata_scheduler.py
       - run: uv run pytest
+      - run: MULI_METADATA_FAIRNESS=1 uv run pytest
       - run: uv run python -m build
       - name: Install wheel and verify client entrypoint
         run: |

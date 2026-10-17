@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "muli-ingest"
-version = "0.2.0"
+version = "0.2.1"
 description = "Local-first, verifiable camera media ingest for NAS workflows"
 readme = "README.md"
 license = { file = "LICENSE" }

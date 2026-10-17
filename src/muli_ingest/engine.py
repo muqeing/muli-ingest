@@ -52,6 +52,9 @@ class Engine:
         source_uuids=(),
         handoff_config=None,
     ):
+        fairness = os.environ.get("MULI_METADATA_FAIRNESS", "0")
+        if fairness not in ("0", "1"):
+            raise ValueError("MULI_METADATA_FAIRNESS must be 0 or 1")
         self.mode = mode
         self.allow_cleanup = allow_cleanup
         self.state = Path(state).absolute()
@@ -81,7 +84,11 @@ class Engine:
         self.lock = threading.RLock()
         self.pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="ingest")
         # Metadata cannot occupy the four camera workers or their source slots.
-        self.metadata_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ingest-metadata")
+        if fairness == "1":
+            from .metadata_scheduler import MetadataScheduler
+            self.metadata_pool = MetadataScheduler(lambda uid: self.store.file_count_up_to(uid, 129) <= 128)
+        else:
+            self.metadata_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ingest-metadata")
         self.run_condition = threading.Condition(self.lock)
         self.active_runs = set()
         self.cancels = {}
@@ -781,6 +788,20 @@ class Engine:
                 current["summary"] = totals.replace(before_summary, f)
                 self._save(current)
 
+    @contextmanager
+    def _metadata_turn(self, b):
+        pool = getattr(self, "metadata_pool", None)
+        if not hasattr(pool, "turn"):
+            yield
+            return
+        with pool.turn(cancel=self.cancels[b["batch_uid"]]):
+            yield
+
+    def _yield_metadata_turn(self, b):
+        pool = getattr(self, "metadata_pool", None)
+        if hasattr(pool, "checkpoint"):
+            pool.checkpoint(cancel=self.cancels[b["batch_uid"]])
+
     def _extract_size_only_metadata(self, b, cfg):
         files = [f for f in self.store.files(b["batch_uid"]) if f["copy_status"] in {"size_verified", "verified"}]
         pending = [f for f in files if f.get("metadata") is None]
@@ -803,21 +824,22 @@ class Engine:
 
         report()
         for offset in range(0, len(pending), 32):
-            self._metadata_check(b)
-            chunk = pending[offset:offset + 32]
-            items = [(self.staging / b["batch_id"] / "SOURCE_DATA" / f["relative_path"],
-                      f["media_type"]) for f in chunk]
-            metadata = extract_metadata_batch(items, cfg.metadata_level, cfg.metadata_timeout_seconds,
-                                              checkpoint=lambda: self._metadata_check(b))
-            self._metadata_check(b)
-            # Commit the same per-file records together; report only after the
-            # durable transaction. Copy/hash/manifest safety paths stay intact.
-            with self.store.transaction():
-                for f, result in zip(chunk, metadata, strict=True):
-                    f["metadata"] = result
-                    self.store.put_file(b["batch_uid"], b["source_id"], f)
-            completed += len(chunk)
-            report(chunk[-1]["relative_path"])
+            with self._metadata_turn(b):
+                self._metadata_check(b)
+                chunk = pending[offset:offset + 32]
+                items = [(self.staging / b["batch_id"] / "SOURCE_DATA" / f["relative_path"],
+                          f["media_type"]) for f in chunk]
+                metadata = extract_metadata_batch(items, cfg.metadata_level, cfg.metadata_timeout_seconds,
+                                                  checkpoint=lambda: self._metadata_check(b))
+                self._metadata_check(b)
+                # Commit the same per-file records together; report only after the
+                # durable transaction. Copy/hash/manifest safety paths stay intact.
+                with self.store.transaction():
+                    for f, result in zip(chunk, metadata, strict=True):
+                        f["metadata"] = result
+                        self.store.put_file(b["batch_uid"], b["source_id"], f)
+                completed += len(chunk)
+                report(chunk[-1]["relative_path"])
 
     def _effective_parallel_limit(self):
         configured = Settings(**self.settings()["values"]).max_parallel_sources
@@ -861,10 +883,15 @@ class Engine:
             self.active_runs.discard(uid)
             self.run_condition.notify_all()
 
+    def _run_metadata_synchronously(self, uid):
+        if hasattr(self.metadata_pool, "run_and_wait"):
+            return self.metadata_pool.run_and_wait(uid, lambda: self._postprocess(uid))
+        return self._postprocess(uid)
+
     def _dispatch(self, uid, *, background, released=False):
         if not background:
             if released or self._run(uid):
-                self._postprocess(uid)
+                self._run_metadata_synchronously(uid)
             return
         # Track the whole pipeline, not just the source worker. A queued metadata
         # task must not be resumed concurrently through the API.
@@ -879,6 +906,7 @@ class Engine:
                 completion.set_exception(exc)
             else:
                 completion.set_result(None)
+        metadata.batch_uid = uid
 
         def source():
             try:
@@ -915,6 +943,7 @@ class Engine:
                 if self.cancels[b["batch_uid"]].is_set():
                     raise SafetyError("operator_stop")
                 self.run_condition.wait(timeout=0.5)
+        self._yield_metadata_turn(b)
         self._check_target(b)
 
     def _postprocess(self, uid):
@@ -927,7 +956,8 @@ class Engine:
             with batch_guard(self.staging, [b["batch_id"], *refs], wait=True,
                              cancel=self.cancels[uid]):
                 self._check_target(b)
-                release = source_release.validate(self.staging, b, scan, files)
+                with self._metadata_turn(b):
+                    release = source_release.validate(self.staging, b, scan, files)
                 receipt = self.staging / b["batch_id"] / "ingest_complete.json"
                 if receipt.exists() or receipt.is_symlink():
                     raise SafetyError("existing_receipt_requires_review")
@@ -937,16 +967,18 @@ class Engine:
                 cfg = Settings(**b["settings"])
                 self._metadata_check(b)
                 proofs = {}
-                source_release.check_targets(self.staging, b, files, cfg.hash_threads,
-                                             lambda: self._metadata_check(b), proofs)
+                with self._metadata_turn(b):
+                    source_release.check_targets(self.staging, b, files, cfg.hash_threads,
+                                                 lambda: self._metadata_check(b), proofs)
                 self._extract_size_only_metadata(b, cfg)
-                self._check_target(b)
-                # Metadata can take time. Certify the selected destinations
-                # again before success; unchanged files still require no hash.
-                source_release.check_targets(self.staging, b, files, cfg.hash_threads,
-                                             lambda: self._metadata_check(b), proofs)
-                source_release.validate(self.staging, self.batch(uid), scan, self.store.files(uid))
-                self._complete_batch(uid, scan, cfg, release["whole_selection"])
+                with self._metadata_turn(b):
+                    self._check_target(b)
+                    # Metadata can take time. Certify the selected destinations
+                    # again before success; unchanged files still require no hash.
+                    source_release.check_targets(self.staging, b, files, cfg.hash_threads,
+                                                 lambda: self._metadata_check(b), proofs)
+                    source_release.validate(self.staging, self.batch(uid), scan, self.store.files(uid))
+                    self._complete_batch(uid, scan, cfg, release["whole_selection"])
         except Exception as exc:
             self._record_failure(uid, scan, exc)
 
@@ -1251,35 +1283,37 @@ class Engine:
                 raise SafetyError("cannot_resume")
             if uid in self.futures and not self.futures[uid].done():
                 raise SafetyError("batch_busy")
-            if b.get("source_released"):
+            released = bool(b.get("source_released"))
+            if released:
                 b["state"] = "FINALIZING"
                 b["error"] = None
                 b["progress"]["stage"] = "METADATA_QUEUED"
                 self._save(b)
                 self.cancels[uid] = threading.Event()
-                self._dispatch(uid, background=background, released=True)
-                return self.batch(uid)
-            if any(
-                x["source_id"] == b["source_id"]
-                and not x.get("source_released")
-                and x["batch_uid"] != uid
-                and x["state"] in {"QUEUED", "PREPARING", "COPYING", "VERIFYING", "FINALIZING", "RECOVERING"}
-                for x in self.batches()
-            ):
-                raise SafetyError("source_busy")
-            self.refresh_sources()
-            source = self.source(b["source_id"])
-            if source["identity"] != b["source"]["identity"] and not self._same_volume(
-                b["source"], source
-            ):
-                raise SafetyError("source_changed")
-            b["source"] = source
-            b["source_session_id"] = source["session_id"]
-            b["state"] = "RECOVERING"
-            b["error"] = None
-            self._save(b)
-            self.cancels[uid] = threading.Event()
-        self._dispatch(uid, background=background)
+            else:
+                if any(
+                    x["source_id"] == b["source_id"]
+                    and not x.get("source_released")
+                    and x["batch_uid"] != uid
+                    and x["state"] in {"QUEUED", "PREPARING", "COPYING", "VERIFYING", "FINALIZING", "RECOVERING"}
+                    for x in self.batches()
+                ):
+                    raise SafetyError("source_busy")
+                self.refresh_sources()
+                source = self.source(b["source_id"])
+                if source["identity"] != b["source"]["identity"] and not self._same_volume(
+                    b["source"], source
+                ):
+                    raise SafetyError("source_changed")
+                b["source"] = source
+                b["source_session_id"] = source["session_id"]
+                b["state"] = "RECOVERING"
+                b["error"] = None
+                self._save(b)
+                self.cancels[uid] = threading.Event()
+        # Never hold the engine lock while waiting for a metadata coordinator.
+        # The durable FINALIZING/RECOVERING state already fences another resume.
+        self._dispatch(uid, background=background, released=released)
         return self.batch(uid)
 
     def close(self):

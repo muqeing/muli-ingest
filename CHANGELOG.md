@@ -25,3 +25,8 @@
 - 提供 14 天默认留存、延期、保护锁、转存确认和清理预览。
 - 提供局域网固定口令登录、会话保护和登录限速。
 - 提供 Linux/FNOS 相机卷自动发现入口。
+## 0.2.1 — 2026-10-18
+
+- Add opt-in `MULI_METADATA_FAIRNESS=1`: bounded regular/short coordinators share one fair media-I/O turn, yielding between existing readers and 32-file metadata groups. At most four short turns precede a waiting regular batch.
+- Choose the short lane with a bounded indexed key count; queued work retains identifiers rather than file lists. Keep copy priority, source release, destination checks and final receipt requirements.
+- Route synchronous metadata through the same coordinators, release the engine lock before waiting on resume, and reject recursive synchronous waits. Add cancellation, ownership, backlog, small-before-large and destination-change regressions. Default behavior remains single-threaded; this change does not retry or reprocess historical batches.

@@ -82,6 +82,14 @@ class Store:
                 for r in self.db.execute("SELECT data FROM files WHERE batch=? ORDER BY path", (batch,))
             ]
 
+    def file_count_up_to(self, batch, maximum):
+        """Count only enough indexed keys to choose a metadata lane, not bodies."""
+        if type(maximum) is not int or not 1 <= maximum <= 1024:
+            raise ValueError("invalid bounded file-count limit")
+        with self.lock:
+            return sum(1 for _ in self.db.execute(
+                "SELECT 1 FROM files WHERE batch=? LIMIT ?", (batch, maximum)))
+
     def history(self, source_id, path, hash_value):
         with self.lock:
             return [
