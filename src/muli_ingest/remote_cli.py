@@ -363,7 +363,7 @@ def _command_parser() -> argparse.ArgumentParser:
     commands.add_parser("schema", add_help=False)
     version = commands.add_parser("version", add_help=False)
     version.add_argument("--remote", action="store_true")
-    for name in ("health", "status", "session", "sources", "batches"):
+    for name in ("health", "status", "session", "sources", "batches", "settings"):
         commands.add_parser(name, add_help=False)
     for name in ("batch", "files"):
         sub = commands.add_parser(name, add_help=False)
@@ -401,7 +401,7 @@ def _schema() -> dict[str, Any]:
         "api_contract_version": 1,
         "envelope": {"schema_version": 1, "ok": True, "service": SERVICE, "command": "...", "cli_version": CLI_VERSION, "data": "..."},
         "exit_codes": {"success": 0, "usage": 2, "network_or_http": 3, "operation_failed": 4, "wait_timeout": 5},
-        "start_request": {"fields": ["source_id", "scan_id", "scan_revision"], "extra_fields": "rejected", "scan_revision_minimum": 1},
+        "start_request": {"fields": ["source_id", "scan_id", "scan_revision"], "optional_fields": ["expected_settings_version"], "extra_fields": "rejected", "scan_revision_minimum": 1},
         "commands": {
             "help": "local command help",
             "schema": "print this schema",
@@ -410,6 +410,7 @@ def _schema() -> dict[str, Any]:
             "status": "GET /api/v1/status",
             "session": "GET /api/v1/session (and login when --access-code-env is required)",
             "sources": "GET /api/v1/sources",
+            "settings": "GET /api/v1/settings",
             "batches": "GET /api/v1/batches",
             "batch": "GET /api/v1/batches/{batch_id}",
             "files": "GET /api/v1/batches/{batch_id}/files",
@@ -428,7 +429,8 @@ def _dry_run(method: str, path: str, body: Any) -> dict[str, Any]:
 
 
 def _validate_batch_request(value: Any) -> dict[str, Any]:
-    if not isinstance(value, dict) or set(value) != {"source_id", "scan_id", "scan_revision"}:
+    required = {"source_id", "scan_id", "scan_revision"}
+    if not isinstance(value, dict) or not required <= set(value) or set(value) - required - {"expected_settings_version"}:
         raise UsageError("start request must contain exactly BatchRequest fields", {"fields": ["source_id", "scan_id", "scan_revision"]})
     if not isinstance(value["source_id"], str) or not value["source_id"]:
         raise UsageError("source_id must be a non-empty string")
@@ -438,6 +440,10 @@ def _validate_batch_request(value: Any) -> dict[str, Any]:
         raise UsageError("scan_revision must be an integer")
     if value["scan_revision"] < 1:
         raise UsageError("scan_revision must be at least 1")
+    if "expected_settings_version" in value:
+        version = value["expected_settings_version"]
+        if type(version) is not int or version < 1:
+            raise UsageError("expected_settings_version must be a positive integer")
     return value
 
 
@@ -520,6 +526,7 @@ def _dispatch(args: argparse.Namespace) -> tuple[Any, int]:
     reads = {
         "status": f"{_API}/status",
         "sources": f"{_API}/sources",
+        "settings": f"{_API}/settings",
         "batches": f"{_API}/batches",
     }
     if command in reads:
@@ -552,6 +559,10 @@ def _dispatch(args: argparse.Namespace) -> tuple[Any, int]:
         if not args.execute:
             return _dry_run("POST", path, body) | {"idempotency_key": key}, 0
         client.ensure_session(args.access_code_env)
+        if "expected_settings_version" in body:
+            status = client.request("GET", f"{_API}/status")
+            if status.get("capabilities", {}).get("settings_version_guard") is not True:
+                raise TransportError("server_upgrade_required", {"reason": "settings_version_guard_unavailable"})
         return client.request("POST", path, body, idempotency_key=key), 0
     if command in {"interrupt", "resume"}:
         batch = _path_identifier(args.batch_id, "batch_id")

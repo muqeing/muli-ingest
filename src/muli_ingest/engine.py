@@ -119,14 +119,16 @@ class Engine:
                 self.cancels[pending["batch_uid"]] = threading.Event()
                 self._dispatch(pending["batch_uid"], background=True, released=True)
         self.archive_handoff_worker = None
+        self.handoff_configuration_error = None
         if handoff_config:
             try:
                 from .handoff_protocol import configuration
                 from .archive_handoff import IngestHandoff
                 cfg = configuration(handoff_config)
-                self.archive_handoff_worker = IngestHandoff(self,cfg['outbox'],cfg['acknowledgements'])
+                self.archive_handoff_worker = IngestHandoff(self,cfg['outbox'],cfg['acknowledgements'], completion_facts=cfg.get('completion_facts', False))
                 self.archive_handoff_worker.start()
-            except (OSError,ValueError,KeyError,TypeError):
+            except (OSError,ValueError,KeyError,TypeError) as exc:
+                self.handoff_configuration_error = type(exc).__name__
                 print(json.dumps({'service':'ingest-archive-handoff','status':'configuration_needs_review'}),flush=True)
 
     def refresh_sources(self):
@@ -314,8 +316,11 @@ class Engine:
         except (ValueError, OSError) as exc:
             raise SafetyError('staging_coordination', str(exc)) from exc
 
-    def start(self, sid, scan_id, scan_revision, idempotency_key, background=True):
-        request_digest = blake3(json.dumps([sid, scan_id, scan_revision]).encode()).hexdigest()
+    def start(self, sid, scan_id, scan_revision, idempotency_key, background=True, expected_settings_version=None):
+        digest_fields = [sid, scan_id, scan_revision]
+        if expected_settings_version is not None:
+            digest_fields.append(expected_settings_version)
+        request_digest = blake3(json.dumps(digest_fields).encode()).hexdigest()
         if not idempotency_key or len(idempotency_key) > 200:
             raise SafetyError("invalid_idempotency_key")
         with self.lock:
@@ -352,6 +357,8 @@ class Engine:
             ):
                 raise SafetyError("source_busy")
             cfg = self.settings()
+            if expected_settings_version is not None and cfg["version"] != expected_settings_version:
+                raise SafetyError("version_conflict", "设置已变化，请重新确认导片计划")
             with self._stage_new_batch(), self.store.transaction():
                 number = self.store.db.execute("INSERT INTO sequence DEFAULT VALUES").lastrowid
                 uid = uuid.uuid4().hex

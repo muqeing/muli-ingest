@@ -2,6 +2,7 @@
 from copy import deepcopy
 from pathlib import Path
 import re
+import sqlite3
 import threading
 import time
 from blake3 import blake3
@@ -56,13 +57,17 @@ class FeedbackDeferred(Exception):
 
 
 class IngestHandoff:
-    def __init__(self, engine, outbox, acknowledgements):
+    def __init__(self, engine, outbox, acknowledgements, *, completion_facts=False):
         self.e=engine;self.outbox=Path(outbox);self.acks=Path(acknowledgements)
         wire.separate_channels((self.outbox,self.acks),(engine.staging,))
         self.identities=[wire.identity(p) for p in (self.outbox,self.acks)]
         self.stop=threading.Event();self.thread=None;self.tokens={}
         self.record_tokens={}
         self.apply_lock=threading.RLock()
+        self.completion_error = None
+        self.completion_pending_identity = None
+        if completion_facts:
+            self.completion_pending_identity = wire.identity(self.outbox / 'completion-pending')
 
     def roots(self):
         if [wire.identity(p) for p in (self.outbox,self.acks)]!=self.identities:
@@ -254,6 +259,11 @@ class IngestHandoff:
         self.acknowledge(event['job_id'],ack)
         return ack
 
+    def apply_completion(self, fact, clock=None):
+        from .completion_consumer import apply
+        with self.apply_lock:
+            return apply(self, fact, time.time() if clock is None else clock)
+
     def acknowledge(self,jid,ack):
         try:
             self.roots();wire.write(self.acks,jid+'.json',ack)
@@ -261,7 +271,9 @@ class IngestHandoff:
             raise AcknowledgementPending('acknowledgement_pending') from error
 
     def expire(self,clock):
-        for batch in self.e.batches():
+        rows = (self.e.store.expiring_archive_handoffs(wire.iso(clock))
+                if self.completion_pending_identity is not None else self.e.batches())
+        for batch in rows:
             view=current_view(batch,clock)
             if batch.get('archive_handoff',{}).get('status')!='confirmed' or view['status']=='confirmed':
                 continue
@@ -297,7 +309,16 @@ class IngestHandoff:
 
     def tick(self,clock=None):
         clock=time.time() if clock is None else clock
-        self.roots();self.expire(clock)
+        self.roots()
+        if self.completion_pending_identity is not None:
+            if self.completion_error:
+                raise ValueError('completion_worker_requires_review')
+            from .completion_consumer import tick
+            # Old operation leases expire independently through the due index.
+            self.expire(clock)
+            with self.apply_lock:
+                return tick(self, clock)
+        self.expire(clock)
         for p in sorted(self.outbox.glob('*.json')):
             if not wire.HEX.fullmatch(p.stem):
                 continue
@@ -326,11 +347,22 @@ class IngestHandoff:
             self.tokens[p.name]=token
             break
 
+    def feedback_health(self):
+        reason = self.completion_error
+        if self.thread is not None and not self.thread.is_alive() and not self.stop.is_set():
+            reason = reason or 'worker_stopped'
+        return {'mode': 'permanent_completion' if self.completion_pending_identity is not None else 'legacy_lease',
+                'state': 'needs_review' if reason else 'active',
+                'reason': reason}
+
     def start(self):
         def loop():
             while not self.stop.wait(10):
                 try:self.tick()
-                except (OSError,ValueError,KeyError,TypeError):pass
+                except (OSError,ValueError,KeyError,TypeError,sqlite3.Error) as exc:
+                    if self.completion_pending_identity is not None:
+                        self.completion_error = type(exc).__name__
+                        return
         self.thread=threading.Thread(target=loop,name='ingest-archive-handoff',daemon=True);self.thread.start()
 
     def close(self):

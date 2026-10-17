@@ -176,7 +176,26 @@
   function formatCount(value) { return Number.isFinite(Number(value)) ? Number(value).toLocaleString('zh-CN') : '—'; }
   const archiveHandoffStatusLabels = { pending: '后台核对中', partial: '部分已转存', confirmed: '全部已确认转存', needs_review: '需要核对' };
   const archiveDispositionLabels = { retained: '来源保留', partly_moved: '部分已转移', moved: '来源已转移', unknown: '来源状态未知' };
+  function permanentCompletionView(batch) {
+    const raw = batch?.archive_completion;
+    if (!raw || raw.schema !== 'muli-archive-completion/1' || raw.historical_only !== true || raw.operation_authorized !== false
+        || raw.batch_uid !== batch.batch_uid || raw.batch_id !== batch.batch_id || raw.revision !== batch.revision
+        || batch.state !== 'COMPLETED' || !['COPY_VERIFIED', 'COPY_SIZE_VERIFIED'].includes(batch.result)) return null;
+    const {total_file_count: total, confirmed_file_count: confirmed, missing_file_count: missing} = raw;
+    if (![total, confirmed, missing].every(Number.isInteger) || total <= 0 || confirmed < 0 || missing < 0 || confirmed + missing !== total
+        || !['confirmed', 'partial'].includes(raw.status) || (raw.status === 'confirmed') !== (confirmed === total)
+        || !Number.isFinite(Date.parse(raw.checked_at))) return null;
+    const jobs = Array.isArray(raw.jobs) ? raw.jobs.filter((id) => typeof id === 'string' && /^[0-9a-f]{64}$/.test(id)).map((id) => ({job_id: id, project_name: '归档记录'})) : [];
+    const label = raw.status === 'confirmed' ? '归档完成记录已保存' : '部分归档记录已保存';
+    return {status: raw.status, label, displayStatus: raw.status, displayLabel: label,
+      recorded: true, qualified: false, expired: false, countsValid: true, confirmed, total, missing, jobs,
+      note: raw.status === 'confirmed' ? '本批次已完整归档，记录已保留。' : `已记录 ${confirmed} / ${total} 个文件，剩余 ${missing} 个仍待处理。`,
+      raw: {...raw, card_message: '格式化相机卡前，请重新连接并核对备份。',
+        cleanup_message: raw.source_disposition === 'moved' ? '归档时来源已移出，记录仍保留。' : raw.source_disposition === 'partly_moved' ? '部分来源已移出；其余来源清理前请单独核对。' : '归档时保留了中转来源；清理前请单独核对。'}};
+  }
   function archiveHandoffView(batch) {
+    const completion = permanentCompletionView(batch);
+    if (completion) return completion;
     const raw = batch?.archive_handoff;
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { status: 'unknown', label: '未同步', qualified: false, expired: false, countsValid: false, confirmed: null, total: null, missing: null, jobs: [], note: '旧版批次未提供后台转存反馈；不能据此判断已转存。' };
     const status = Object.prototype.hasOwnProperty.call(archiveHandoffStatusLabels, raw.status) ? raw.status : 'needs_review';
@@ -601,14 +620,14 @@
   }
   function renderArchiveHandoff(batch) {
     const view = archiveHandoffView(batch); const card = make('section', 'lifecycle-card archive-handoff-card');
-    const heading = make('div', 'archive-handoff-heading'); heading.append(make('div', 'subheading', '后台转存反馈'));
+    const heading = make('div', 'archive-handoff-heading'); heading.append(make('div', 'subheading', view.recorded ? '归档记录' : '后台转存反馈'));
     heading.append(make('span', `status-tag archive-handoff-status archive-handoff-${view.displayStatus}`, view.displayLabel)); card.append(heading);
     card.append(make('p', 'archive-handoff-note', view.note));
     if (view.status !== 'unknown') {
       const grid = make('div', 'lifecycle-grid archive-handoff-grid');
-      addField(grid, '已确认文件', formatCount(view.confirmed)); addField(grid, '总文件数', formatCount(view.total)); addField(grid, '缺失文件', formatCount(view.missing));
+      addField(grid, view.recorded ? '已归档文件' : '已确认文件', formatCount(view.confirmed)); addField(grid, view.recorded ? '本批次文件' : '总文件数', formatCount(view.total)); addField(grid, view.recorded ? '待处理文件' : '缺失文件', formatCount(view.missing));
       addField(grid, '来源处置', archiveDispositionLabels[view.raw.source_disposition] || '来源状态未知'); card.append(grid);
-      const checked = make('div', 'archive-handoff-times'); checked.append(make('span', '', `后台核对：${formatDate(view.raw.checked_at)}`), make('span', '', `资格到期：${formatDate(view.raw.expires_at)}`)); card.append(checked);
+      const checked = make('div', 'archive-handoff-times'); checked.append(make('span', '', `${view.recorded ? '记录时间' : '后台核对'}：${formatDate(view.raw.checked_at)}`), make('span', '', view.recorded ? '完成记录长期保留' : `资格到期：${formatDate(view.raw.expires_at)}`)); card.append(checked);
       if (view.raw.reason) card.append(make('p', 'archive-handoff-message', `原因：${esc(view.raw.reason)}`));
       const cardMessage = typeof view.raw.card_message === 'string' && view.raw.card_message.trim() ? view.raw.card_message : '后台未提供卡片说明，保留来源并等待核对。';
       const cleanupMessage = typeof view.raw.cleanup_message === 'string' && view.raw.cleanup_message.trim() ? view.raw.cleanup_message : '后台未提供清理说明，不执行来源清理。';

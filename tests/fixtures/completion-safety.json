@@ -1,0 +1,46 @@
+{
+  "baseline": "c7e74e3",
+  "files": {
+    "copier.py": "ad7f859007be8909f24253749e7be633fef7dd33f368116aec7ed60467a6d27d",
+    "safeio.py": "0898ff218b47ed745085008766c933bedb8e770bbe62bb035927b9089829a884",
+    "source_release.py": "ca7a738ff14b63dcddcb417d676ae809852c7edd747d3d395f06638adabee5f5",
+    "staging_coordination.py": "06e97adf3e5623c316b24696f599781c809b3e4c553fa4ef708de897140202c4",
+    "summary.py": "13e29cb7740b5692b420647c0afb41de87b1870837dc7d83c796774d2438f168"
+  },
+  "methods": {
+    "engine.py": {
+      "class": "Engine",
+      "hashes": {
+        "_one_file": "66b3dcb584607614bb15e56683286d11088e4538142692b8b0d32c4aa8ba2830",
+        "_old_copy": "b7eccb597ed12443bf4d1463ea6b2152898e0a9a98e23a96b9e918b2382c6bd3",
+        "_check": "d3493a771c2991299970d6f27c8c24815f3d2be53a3b29443d8ae5d215f70796",
+        "_run": "61dd68a20115447049e7ab0f097345ade987ea78942cef2fcb60147816343ee0",
+        "_run_with_slot": "d8ee16c409f3f9ff913cd400f85f3761407df175fe0c91c43b5c9b5377cdda8d",
+        "_run_with_slot_coordinated": "3858c32a5ec30c743f03d3b396da4e5f90f625351e7a6fc9f13dfd653e026905",
+        "_metadata_check": "d6248fb54aa7c99ed24dc7752f0f18343b31248ed80904bbca17ad080a2bbcf9",
+        "_postprocess": "5e3b9df84db88074f07be58e1d53aaf9640cdfd7c8286606858287e1c3b8ef1b",
+        "_complete_batch": "432a893858352768a4959901efc1b4cb3e5d4484d3ca9a76f48ea01369974992",
+        "_record_failure": "14f1bab2bbdeee17de06cfe548a7efea986b751f780168fbb3f5b2999303ae5a",
+        "_extract_size_only_metadata": "640a250c8545d2682b2011117249a15d0b95606ed580904c774f00cdf314b987",
+        "_dispatch": "8ac39830152da90911fe876386e72dcceec0b47a188eb08f1ff51465c091be46"
+      }
+    },
+    "store.py": {
+      "class": "Store",
+      "hashes": {
+        "transaction": "715882b78b1a99f57de7047652bce2b501cc03fca92d4462b97886bc40cbcb24",
+        "put": "108eb8d0c49ec4fa1dee624ec614e2db3434cd653117edd6912285f7a468a76d",
+        "get": "483cffd65bbba1df2d6c954a0e8b06008303b61b2b86cc3dc1170edf99e0f8a3",
+        "all": "8a6e50e14767c29c18c6f5e1ef256cae02d9219ae203aef0c6e360fa2f2dedbf",
+        "put_file": "0ee0a50f8b3144fddee2d4627596999abf7d951934d98c87876cdc4f9ab3a514",
+        "files": "87bddbf74f13b604811a5ddb51714bdfb0e30f5ca9f72ed27f15e52d96432621",
+        "history": "c91bcc68131f2bde8e0ca7340d3952531826a723af6981bb3251b7de36c82a8b",
+        "has_verified_history": "e827a1f86c278846d87541c02e1113b9d243a4d1eef0f121136e3141bbad0ea1",
+        "event": "bb512d3ac348dc40e4b5d6fb3e5166b867d8982e7efef9601f614402c055c996",
+        "events": "25e8fa52c7f037d6c0248350fe86ddd65164df4eb7d1f00a26057fc6f06ab7e0",
+        "close": "40590a90ad920c6d8780a323a8df254316d1b48ff955fcece963e9feada97a30"
+      }
+    }
+  },
+  "ast_python": "3.12"
+}

@@ -32,6 +32,7 @@ class BatchRequest(BaseModel):
     source_id: str
     scan_id: str
     scan_revision: int = 1
+    expected_settings_version: int | None = Field(default=None, ge=1)
 
 
 class SettingsRequest(BaseModel):
@@ -326,6 +327,8 @@ def create_app(
             "version": __version__,
             "mode": engine.mode,
             "production_ready": False,
+            "completion_feedback": (engine.archive_handoff_worker.feedback_health()
+                if getattr(engine, 'archive_handoff_worker', None) else {"state": "needs_review" if getattr(engine, "handoff_configuration_error", None) else "disabled"}),
             "staging_root": str(engine.staging),
             "tools": {
                 "rclone": rclone,
@@ -333,6 +336,7 @@ def create_app(
                 "ffprobe": shutil.which("ffprobe"),
             },
             "capabilities": {
+                "settings_version_guard": True,
                 "cleanup_enabled": bool(engine.allow_cleanup and settings["values"]["cleanup_enabled"]),
                 "auto_cleanup_supported": False,
                 "purge_supported": False,
@@ -389,7 +393,7 @@ def create_app(
         key = request.headers.get("idempotency-key")
         if not key or len(key) > 200:
             raise SafetyError("invalid_idempotency_key")
-        batch = engine.start(payload.source_id, payload.scan_id, payload.scan_revision, key, background=True)
+        batch = engine.start(payload.source_id, payload.scan_id, payload.scan_revision, key, background=True, expected_settings_version=payload.expected_settings_version)
         return _batch_view(batch)
 
     @app.get(f"{api}/batches")

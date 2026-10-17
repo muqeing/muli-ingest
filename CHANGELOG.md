@@ -1,3 +1,9 @@
+## 0.2.0 — 2026-10-18
+
+- Accept explicit permanent completion facts transactionally without granting current source-cleanup permission.
+- Poll only unresolved markers and use an indexed due-lease query; release consumed marker hints. Keep legacy exchange the default and never auto-import old leases as facts.
+- Add read-only completion status and matching source/client versions. Preserve the independently tested desktop client settings read command and optional settings-version guard, including a server-capability check before a guarded start. NAS exact role-file readback and public health passed; 105 server-role isolated checks and 115 maintained-source checks passed without skips. Authenticated feedback-worker status and a real newly completed archive remain separate acceptance gaps.
+
 # 更新记录
 
 本项目遵循语义化版本。日期使用 `YYYY-MM-DD`。

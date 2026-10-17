@@ -31,6 +31,7 @@ class ApiHandler(BaseHTTPRequestHandler):
     bad_json = False
     session_body = None
     post_status = 202
+    version_guard = False
 
     def log_message(self, *_args):
         return
@@ -70,6 +71,10 @@ class ApiHandler(BaseHTTPRequestHandler):
             self._write(200, {"status": "ok"})
         elif self.path == "/api/v1/session":
             self._write(200, self.session_body if self.session_body is not None else {"required": self.require_auth, "authenticated": (not self.require_auth) or "muli_ingest_session=ok" in self.headers.get("Cookie", "")})
+        elif self.path == "/api/v1/status":
+            self._write(200, {"capabilities": {"settings_version_guard": self.version_guard}})
+        elif self.path == "/api/v1/settings":
+            self._write(200, {"version": 5, "values": {}})
         elif self.path.startswith("/api/v1/batches/"):
             state = self.states.pop(0) if len(self.states) > 1 else (self.states[0] if self.states else "COMPLETED")
             self._write(200, {"batch_id": "b1", "state": state})
@@ -102,6 +107,7 @@ def server():
     ApiHandler.bad_json = False
     ApiHandler.session_body = None
     ApiHandler.post_status = 202
+    ApiHandler.version_guard = False
     value = ThreadingHTTPServer(("127.0.0.1", 0), ApiHandler)
     thread = threading.Thread(target=value.serve_forever, daemon=True)
     thread.start()
@@ -239,3 +245,27 @@ def test_version_flag_and_remote_version(server):
     assert code == 3
     # The synthetic status response intentionally lacks a version field.
     assert envelope["error"]["details"]["reason"] == "invalid_status_schema"
+
+
+def test_settings_read_command(server):
+    code, result = invoke('--url', server, 'settings')
+    assert code == 0 and result['data']['version'] == 5
+    assert all(r[0] == 'GET' for r in ApiHandler.requests)
+
+@pytest.mark.parametrize('version',[True,False,0,-1,None,'5',1.5])
+def test_invalid_expected_settings_version_no_network(server,tmp_path,version):
+    p=tmp_path/'request.json'
+    p.write_text(json.dumps({'source_id':'s','scan_id':'scan','scan_revision':1,'expected_settings_version':version}))
+    code,_=invoke('--url',server,'start','--request',str(p),'--idempotency-key','one','--execute')
+    assert code == 2 and not ApiHandler.requests
+
+@pytest.mark.parametrize('supported',[False,True])
+def test_guarded_start_requires_server_support(server,tmp_path,supported):
+    ApiHandler.version_guard=supported
+    body={'source_id':'s','scan_id':'scan','scan_revision':1,'expected_settings_version':5}
+    p=tmp_path/'request.json';p.write_text(json.dumps(body))
+    code,_=invoke('--url',server,'start','--request',str(p),'--idempotency-key','one','--execute')
+    posts=[r for r in ApiHandler.requests if r[0]=='POST']
+    assert code == (0 if supported else 3)
+    assert len(posts) == int(supported)
+    if supported:assert json.loads(posts[0][3]) == body

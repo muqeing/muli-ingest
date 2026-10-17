@@ -17,6 +17,9 @@ class Store:
         CREATE TABLE IF NOT EXISTS events(seq INTEGER PRIMARY KEY AUTOINCREMENT,batch TEXT,data TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS sequence(id INTEGER PRIMARY KEY AUTOINCREMENT);
         CREATE TABLE IF NOT EXISTS requests(key TEXT PRIMARY KEY,digest TEXT,batch TEXT);
+        CREATE INDEX IF NOT EXISTS archive_handoff_due ON objects(
+          COALESCE(julianday(json_extract(data,'$.archive_handoff.expires_at')),-1))
+          WHERE kind='batch' AND json_extract(data,'$.archive_handoff.status')='confirmed';
         """)
 
     @contextlib.contextmanager
@@ -48,6 +51,15 @@ class Store:
                 json.loads(r["data"])
                 for r in self.db.execute("SELECT data FROM objects WHERE kind=? ORDER BY rowid DESC", (kind,))
             ]
+
+    def expiring_archive_handoffs(self, clock_iso):
+        """Read only expiring temporary permissions, never all historical batches."""
+        with self.lock:
+            return [json.loads(row[0]) for row in self.db.execute(
+                "SELECT data FROM objects INDEXED BY archive_handoff_due "
+                "WHERE kind='batch' AND json_extract(data,'$.archive_handoff.status')='confirmed' "
+                "AND COALESCE(julianday(json_extract(data,'$.archive_handoff.expires_at')),-1)<=julianday(?)",
+                (clock_iso,))]
 
     def put_file(self, batch, source_id, file):
         with self.lock:
